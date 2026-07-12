@@ -1,0 +1,122 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(which:*)",
+      "Bash(echo:*)",
+      "Bash(pwd:*)",
+      "Bash(diff:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(jq:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(touch:*)",
+      "Bash(go:*)",
+      "Bash(gofmt:*)",
+      "Bash(golangci-lint:*)",
+      "Bash(git:*)",
+      "Bash(gh:*)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git rebase:*)",
+      "Bash(git branch -D:*)",
+      "Bash(rm -rf:*)",
+      "Bash(go clean -modcache:*)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "osascript -e 'display notification \"タスクが完了しました\" with title \"Claude Code\" sound name \"Glass\"'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/rikushimoida/Documents/repository/job-hunt-agent/.claude/hooks/check-go-toolchain.sh",
+            "if": "Skill(impl *)"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/rikushimoida/Documents/repository/job-hunt-agent/.claude/hooks/bypass-heuristic.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "if echo \"$TOOL_INPUT\" | jq -r '.run_in_background // false' | grep -q 'true'; then echo 'BLOCKED: run_in_background: true は禁止されています。' >&2; exit 2; fi"
+          },
+          {
+            "type": "command",
+            "command": "if echo \"$TOOL_INPUT\" | jq -r '.command' | grep -qE 'git\\s+(reset\\s+--hard|rebase|push\\s+--force|push\\s+-f|branch\\s+-D)'; then echo 'BLOCKED: 破壊的Gitコマンドです。目的・影響範囲・リスクを明示してユーザーに確認してください。' >&2; exit 2; fi"
+          },
+          {
+            "type": "command",
+            "command": "if echo \"$TOOL_INPUT\" | jq -r '.command' | grep -qE 'go\\s+clean\\s+-modcache'; then echo 'BLOCKED: go clean -modcache はモジュールキャッシュを全削除します。ユーザーに確認してください。' >&2; exit 2; fi"
+          },
+          {
+            "type": "command",
+            "command": "if echo \"$TOOL_INPUT\" | jq -r '.command' | grep -qE 'git\\s+commit'; then if [ -f /Users/rikushimoida/Documents/repository/job-hunt-agent/go.mod ]; then LAST_TEST=$(find /tmp -maxdepth 1 -name '.job_hunt_agent_last_test_run' -mmin -30 2>/dev/null); if [ -z \"$LAST_TEST\" ]; then echo 'BLOCKED: コミット前にテストを実行してください。go test が直近30分以内に実行されていません。' >&2; exit 2; fi; fi; fi"
+          },
+          {
+            "type": "command",
+            "command": "if echo \"$TOOL_INPUT\" | jq -r '.command' | grep -qE 'go\\s+test'; then touch /tmp/.job_hunt_agent_last_test_run; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$TOOL_INPUT\" | jq -r '.file_path // empty' | grep -qE '\\.env'; then echo 'WARNING: .envファイルの変更です。環境設定に影響があります。ユーザーに確認してください。' >&2; exit 2; fi"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/rikushimoida/Documents/repository/job-hunt-agent/.claude/hooks/post-edit-lint.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
