@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash /Users/rikushimoida/Documents/repository/job-hunt-agent/.claude/hooks/check-go-toolchain.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/check-go-toolchain.sh\"",
             "if": "Skill(impl *)"
           }
         ]
@@ -71,28 +71,28 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash /Users/rikushimoida/Documents/repository/job-hunt-agent/.claude/hooks/bypass-heuristic.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/bypass-heuristic.sh\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "if echo \"$TOOL_INPUT\" | jq -r '.run_in_background // false' | grep -q 'true'; then echo 'BLOCKED: run_in_background: true は禁止されています。' >&2; exit 2; fi"
+            "command": "BG=$(jq -r '.tool_input.run_in_background // false'); if [ \"$BG\" = \"true\" ]; then echo 'BLOCKED: run_in_background: true は禁止されています。' >&2; exit 2; fi"
           },
           {
             "type": "command",
-            "command": "if echo \"$TOOL_INPUT\" | jq -r '.command' | grep -qE 'git\\s+(reset\\s+--hard|rebase|push\\s+--force|push\\s+-f|branch\\s+-D)'; then echo 'BLOCKED: 破壊的Gitコマンドです。目的・影響範囲・リスクを明示してユーザーに確認してください。' >&2; exit 2; fi"
+            "command": "CMD=$(jq -r '.tool_input.command // empty'); if echo \"$CMD\" | grep -qE 'git\\s+(reset\\s+--hard|rebase|push\\s+--force|push\\s+-f|branch\\s+-D)'; then echo 'BLOCKED: 破壊的Gitコマンドです。目的・影響範囲・リスクを明示してユーザーに確認してください。' >&2; exit 2; fi"
           },
           {
             "type": "command",
-            "command": "if echo \"$TOOL_INPUT\" | jq -r '.command' | grep -qE 'go\\s+clean\\s+-modcache'; then echo 'BLOCKED: go clean -modcache はモジュールキャッシュを全削除します。ユーザーに確認してください。' >&2; exit 2; fi"
+            "command": "CMD=$(jq -r '.tool_input.command // empty'); if echo \"$CMD\" | grep -qE 'go\\s+clean\\s+-modcache'; then echo 'BLOCKED: go clean -modcache はモジュールキャッシュを全削除します。ユーザーに確認してください。' >&2; exit 2; fi"
           },
           {
             "type": "command",
-            "command": "if echo \"$TOOL_INPUT\" | jq -r '.command' | grep -qE 'git\\s+commit'; then if [ -f /Users/rikushimoida/Documents/repository/job-hunt-agent/go.mod ]; then LAST_TEST=$(find /tmp -maxdepth 1 -name '.job_hunt_agent_last_test_run' -mmin -30 2>/dev/null); if [ -z \"$LAST_TEST\" ]; then echo 'BLOCKED: コミット前にテストを実行してください。go test が直近30分以内に実行されていません。' >&2; exit 2; fi; fi; fi"
+            "command": "CMD=$(jq -r '.tool_input.command // empty'); if echo \"$CMD\" | grep -qE 'git\\s+commit'; then if [ -f \"${CLAUDE_PROJECT_DIR}/go.mod\" ]; then M=/tmp/.job_hunt_agent_last_test_run; FRESH=$(find \"$M\" -mmin -30 2>/dev/null); if [ -z \"$FRESH\" ]; then echo 'BLOCKED: コミット前にテストを実行してください。go test が直近30分以内に実行されていません。' >&2; exit 2; fi; fi; fi"
           },
           {
             "type": "command",
-            "command": "if echo \"$TOOL_INPUT\" | jq -r '.command' | grep -qE 'go\\s+test'; then touch /tmp/.job_hunt_agent_last_test_run; fi"
+            "command": "CMD=$(jq -r '.tool_input.command // empty'); if echo \"$CMD\" | grep -qE 'go\\s+test'; then touch /tmp/.job_hunt_agent_last_test_run; fi"
           }
         ]
       },
@@ -101,7 +101,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if echo \"$TOOL_INPUT\" | jq -r '.file_path // empty' | grep -qE '\\.env'; then echo 'WARNING: .envファイルの変更です。環境設定に影響があります。ユーザーに確認してください。' >&2; exit 2; fi"
+            "command": "FP=$(jq -r '.tool_input.file_path // empty'); if echo \"$FP\" | grep -qE '\\.env'; then echo 'BLOCKED: .envファイルの変更です。環境設定に影響があります。ユーザーに確認してください。' >&2; exit 2; fi"
           }
         ]
       }
@@ -112,7 +112,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash /Users/rikushimoida/Documents/repository/job-hunt-agent/.claude/hooks/post-edit-lint.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/post-edit-lint.sh\"",
             "timeout": 30
           }
         ]

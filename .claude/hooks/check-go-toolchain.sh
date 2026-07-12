@@ -4,7 +4,7 @@
 # go.mod が無い（= まだ Go プロジェクトとして初期化されていない）場合は通す。
 # ブートストラップ作業そのものを /impl で行えるようにするため。
 
-REPO_ROOT="/Users/rikushimoida/Documents/repository/job-hunt-agent"
+REPO_ROOT="${CLAUDE_PROJECT_DIR:-.}"
 
 if [ ! -f "$REPO_ROOT/go.mod" ]; then
   exit 0
