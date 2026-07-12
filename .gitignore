@@ -17,3 +17,12 @@ coverage.txt
 # 環境変数
 .env
 .env.local
+
+# 設定の実値（*.example.yaml のみ Git 管理する）
+config/profile.yaml
+config/sources.yaml
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
