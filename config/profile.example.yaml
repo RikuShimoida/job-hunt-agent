@@ -1,0 +1,57 @@
+# 求職状態: searching（通常閾値で通知）/ watching（高スコアのみ通知）/ paused（収集も通知もしない）
+search_status: searching
+
+# 参画可能日
+available_from: 2026-09-01
+
+# 単価（円 / 月）
+minimum_rate: 700000
+target_rate: 850000
+
+# 稼働
+preferred_work_days: 3
+monthly_hours_min: 100
+monthly_hours_max: 160
+
+# リモート条件
+# remote_required: true のときは max_onsite_days を 0 にすること（両立しない）
+remote_required: true
+max_onsite_days: 0
+allowed_locations:
+  - 東京
+  - リモート
+
+# 契約形態
+contract_types:
+  - フリーランス
+  - 業務委託
+
+# スキル
+required_skills:
+  - Java
+  - AWS
+preferred_skills:
+  - Spring
+  - TypeScript
+  - React
+  - Docker
+  - Terraform
+learning_skills:
+  - Go
+
+# 希望する役割
+desired_roles:
+  - バックエンド
+  - SRE
+
+# 避けたい条件（案件本文にこれらが含まれると除外する）
+excluded_keywords:
+  - 常駐必須
+  - 週5日必須
+
+# 通知閾値（0〜100）。未設定（0）なら search_status に応じた既定値
+#   searching → 60 / watching → 80
+notification_threshold: 0
+
+# スキルシート（Phase 1 では保管のみ。自動提出はしない）
+skill_sheet_path: ""
