@@ -1,0 +1,17 @@
+From: recruit@example-onsite.test
+Subject: 【急募】PHP 保守運用（常駐必須）
+Date: 2026-07-02
+Message-ID: fixture-email-002
+
+案件名: PHP 保守運用案件
+企業: 架空システム開発
+単価: 60万円
+勤務地: 大阪
+リモート: 常駐必須
+稼働: 週5日
+参画時期: 2026-08-01
+契約形態: フリーランス
+必須スキル: PHP、Laravel
+役割: バックエンド
+概要: 既存システムの保守運用。常駐必須のためオフィス勤務となります。
+URL: https://example-onsite.test/jobs/002

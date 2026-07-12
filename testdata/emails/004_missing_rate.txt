@@ -1,0 +1,17 @@
+From: info@example-vague.test
+Subject: Go／Kubernetes の基盤運用案件（単価応相談）
+Date: 2026-07-04
+Message-ID: fixture-email-004
+
+案件名: Go／Kubernetes 基盤運用案件
+企業: 架空クラウド株式会社
+勤務地: フルリモート
+リモート: フルリモート
+稼働: 週3日
+参画時期: 2026-09-01
+契約形態: フリーランス
+必須スキル: Go、Kubernetes、AWS
+歓迎スキル: Terraform、Docker
+役割: SRE
+概要: 単価は面談後に決定するため記載なし。単価が null のまま保存されることの確認用。
+URL: https://example-vague.test/jobs/004

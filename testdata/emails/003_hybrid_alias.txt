@@ -1,0 +1,18 @@
+From: sales@example-hybrid.test
+Subject: TypeScript／React のフロント刷新案件
+Date: 2026-07-03
+Message-ID: fixture-email-003
+
+案件名：TypeScript／React フロント刷新案件
+クライアント：架空デジタル株式会社
+月額：80万円
+勤務地：東京（週1出社）
+働き方：リモート可（週1出社）
+稼働：週4日
+参画時期：2026-10-01
+契約形態：業務委託
+必須スキル：TS、React、JS
+歓迎スキル：Next.js、GraphQL
+役割：フロントエンド
+概要：既存フロントエンドの刷新。ラベルは全角コロン、スキルは略称表記。
+URL：https://example-hybrid.test/jobs/003

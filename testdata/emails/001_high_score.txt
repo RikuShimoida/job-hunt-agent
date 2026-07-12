@@ -1,0 +1,23 @@
+From: agent@example-agent.test
+Subject: 【新着案件】Java／AWS 基盤改善のご案内
+Date: 2026-07-01
+Message-ID: fixture-email-001
+
+いつもお世話になっております。ご経歴に合致する案件をご紹介します。
+
+案件名: Java／AWS 基盤改善案件
+企業: 架空テクノロジー株式会社
+想定単価: 75〜85万円
+勤務地: 東京
+リモート: フルリモート
+稼働: 週3日
+稼働時間: 100〜140時間
+参画時期: 2026-09-01
+契約形態: フリーランス
+必須スキル: Java、Spring、AWS
+歓迎スキル: Docker、Terraform、TypeScript
+役割: バックエンド、SRE
+概要: 既存の基盤をコンテナ化し、可用性を高める改善案件です。
+URL: https://example-agent.test/jobs/001
+
+ご興味があればご連絡ください。
