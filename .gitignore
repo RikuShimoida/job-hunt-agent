@@ -1,1 +1,19 @@
 .vscode/
+.DS_Store
+
+# Claude Code
+.claude/worktrees/
+.claude/settings.local.json
+
+# Go
+bin/
+dist/
+*.exe
+*.test
+*.out
+*.prof
+coverage.txt
+
+# 環境変数
+.env
+.env.local
