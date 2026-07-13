@@ -1,0 +1,59 @@
+# 求職状態: searching（通常閾値で通知）/ watching（高スコアのみ通知）/ paused（収集も通知もしない）
+search_status: searching
+
+# 参画可能日
+available_from: 2026-09-01
+
+# 単価（円 / 月）
+minimum_rate: 700000
+target_rate: 850000
+
+# 稼働
+preferred_work_days: 3
+monthly_hours_min: 100
+monthly_hours_max: 160
+
+# リモート条件
+# remote_required: true は「出社0日のみ許容」。常駐だけでなくハイブリッド（週N日出社）も除外する。
+# 出社を許容するなら remote_required: false + max_onsite_days: N を使う（両者は両立しない）
+remote_required: true
+max_onsite_days: 0
+allowed_locations:
+  - 東京
+  - リモート
+
+# 契約形態
+contract_types:
+  - フリーランス
+  - 業務委託
+
+# スキル
+required_skills:
+  - Java
+  - AWS
+preferred_skills:
+  - Spring
+  - TypeScript
+  - React
+  - Docker
+  - Terraform
+learning_skills:
+  - Go
+
+# 希望する役割
+desired_roles:
+  - バックエンド
+  - SRE
+
+# 避けたい条件（案件名・概要にこれらが含まれると除外する）
+# メール原文までは照合しない（「常駐必須ではありません」のような否定文で誤除外されるため）
+excluded_keywords:
+  - 常駐必須
+  - 週5日必須
+
+# 通知閾値（0〜100）。未設定（0）なら search_status に応じた既定値
+#   searching → 60 / watching → 80
+notification_threshold: 0
+
+# スキルシート（Phase 1 では保管のみ。自動提出はしない）
+skill_sheet_path: ""

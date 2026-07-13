@@ -1,0 +1,12 @@
+# Phase 1 では外部サービスへ接続しない。
+# type は fixture_email / fixture_html のみ対応（Gmail は Phase 3、公開 Web は Phase 4）。
+sources:
+  - name: fixture-email
+    type: fixture_email
+    enabled: true
+    path: testdata/emails
+
+  - name: fixture-html
+    type: fixture_html
+    enabled: true
+    path: testdata/html
