@@ -8,6 +8,7 @@ import (
 
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/model"
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/port"
+	"github.com/RikuShimoida/job-hunt-agent/internal/normalization"
 	"github.com/RikuShimoida/job-hunt-agent/internal/notifier/message"
 )
 
@@ -388,6 +389,84 @@ func TestSnapshotLabelsMatchMaterialFields(t *testing.T) {
 		t.Errorf("差分表示の項目が重要変更の定義とずれている: model=%v message=%v", want, got)
 	}
 }
+
+// TestUpdateAlwaysExplainsItself は本機能の不変条件を総当たりで検証する。
+//
+//	MaterialHash(before) != MaterialHash(after) ならば、
+//	Format は必ず1行以上の差分を出す（＝再通知するなら必ず理由を本文に書ける）。
+//
+// ラベル集合の一致（TestSnapshotLabelsMatchMaterialFields）だけでは、値関数の
+// 識別力の差を検知できない。実際、normalization.Remote が「週0日出社」に対して
+// (full_remote, &0) を返していた頃は、ハッシュは変わるのに表示は「フルリモート」で
+// 同一となり、見出し以外まったく同じ「更新」通知が飛んだ。
+//
+// 正規化が返しうる状態は有限なので、実際の正規化結果を突き合わせて総当たりする。
+func TestUpdateAlwaysExplainsItself(t *testing.T) {
+	t.Parallel()
+
+	states := normalizedStates()
+
+	for _, before := range states {
+		for _, after := range states {
+			if model.MaterialHash(before) == model.MaterialHash(after) {
+				continue
+			}
+
+			out := message.Format(updateItem(before, after))
+			if !strings.Contains(out, "変更：") {
+				t.Errorf("重要変更ありと判定されたのに差分が出ていない\nbefore=%v\nafter =%v\n--- 本文 ---\n%s",
+					model.MaterialFields(before), model.MaterialFields(after), out)
+			}
+		}
+	}
+}
+
+// normalizedStates は normalization が実際に返しうる案件の状態を列挙する。
+// 手で組んだ JobPosting ではなく正規化を通すのは、正規化の表現の揺れ
+// （同じ意味が2通りで表現されること）ごと検証対象に入れるため。
+func normalizedStates() []model.JobPosting {
+	remoteInputs := []string{
+		"", "応相談", "フルリモート", "完全リモート", "週0日出社",
+		"リモート可", "リモート可（週1出社）", "週2日出社", "週5日出社", "常駐必須",
+	}
+	rateInputs := []string{
+		"", "応相談", "75〜85万円", "90〜100万円", "80万円", "時給5000円",
+	}
+	skillInputs := [][]string{
+		nil, {"Java", "AWS"}, {"AWS", "Java"}, {"Java", "AWS", "Kubernetes"},
+	}
+	startInputs := []*time.Time{
+		nil,
+		ptrTime(time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)),
+		ptrTime(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)),
+	}
+
+	var jobs []model.JobPosting
+	for _, r := range remoteInputs {
+		remoteType, onsiteDays := normalization.Remote(r)
+		for _, rate := range rateInputs {
+			rateType, rateMin, rateMax := normalization.Rate(rate)
+			for _, skills := range skillInputs {
+				for _, start := range startInputs {
+					jobs = append(jobs, model.JobPosting{
+						Title:          "案件",
+						Score:          92,
+						RateType:       rateType,
+						RateMin:        rateMin,
+						RateMax:        rateMax,
+						RemoteType:     remoteType,
+						OnsiteDays:     onsiteDays,
+						StartDate:      start,
+						RequiredSkills: normalization.Skills(skills),
+					})
+				}
+			}
+		}
+	}
+	return jobs
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }
 
 func labelsOf(fields []string) []string {
 	labels := make([]string, 0, len(fields))

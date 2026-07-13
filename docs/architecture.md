@@ -340,7 +340,8 @@ type ErrorNotifier interface {
 | 2026-07-13 | 差分表示は**表示用スナップショット**（`message.Snapshot` → `notifications.material_fields`）を別に保存して行い、`payload_hash` の定義（`model.MaterialHash`）は**一切変えない** | `model.MaterialFields` をそのまま保存して素で表示する / `materialFields` の値表現自体を日本語化して単一定義のまま使う | `model.MaterialFields` はハッシュの入力であり、値が `monthly 750000〜850000` / `full_remote` のような内部表現。そのまま出すと利用者向けの Slack 通知に内部表現が露出する。かといって値を日本語化すると `MaterialHash` の入力が変わり、**通知済みの全案件が次回実行で一斉に「更新」再通知される**（中身は何も変わっていないのに）。再通知の判定（ハッシュ・不変）と差分の表示（スナップショット・表示層）へ責務を割ることで、本文の `単価：` 行と `変更：` 行が同じフォーマッタから出て表記も揃う。代償として項目定義が2箇所に増えるため、ラベル集合の一致を UT（`TestSnapshotLabelsMatchMaterialFields`）で担保する |
 | 2026-07-13 | `MaterialHash` の値を golden 値として UT で固定する（`TestMaterialHashGolden`） | ハッシュの安定性（同じ入力で同じ値）だけをテストする（現状維持） | `payload_hash` は `notifications` へ永続化されており、ハッシュの入力を変えた瞬間に既存の全レコードと一致しなくなって一斉再通知が起きる。「同じ入力で同じ値」のテストは定義変更を検知できない。重要変更の項目を意図して増やすときは、一度だけ再通知されることを承知のうえで golden 値を更新する |
 | 2026-07-13 | `collect` 単体ではエラー通知を Slack へ送らない（`dryRun=true` で組み立てる） | `buildNotifiers` の `DryRun` 分岐を案件通知とエラー通知で分け、`collect` でもエラー通知だけ実送信にする | 定期実行の入口は `run` であり、`collect` 単体は手元での確認用と位置づける。`collect` を実送信として組み立てると、通知を行わないコマンドの副作用として Slack へ投稿が飛び、手元で試すたびにチャンネルが汚れる。`collect` だけを定期実行する運用が現実に出てきた時点で見直す |
-| 2026-07-13 | `payload_hash` の導出（`model.MaterialHash`）は当面 Notifier アダプタ側に置く | `port.NotifyItem` に `PayloadHash` を持たせて `application` が詰める / `Notifier` は送否だけ返し `application` が `model.Notification` を組み立てる | 再通知の判定基準はユースケースの責務であり、層としては `application` 側が素直。ただし現状 Notifier は `slack` / `stdout` の2実装で壊れておらず、動く構造を組み替える価値が今はない。**Notifier が増える Phase 3 で再検討する**（実装が散ると片方だけ古い定義を使う事故が起きうる） |
+| 2026-07-13 | `payload_hash` の導出（`model.MaterialHash`）と**スナップショットの生成（`message.Snapshot`）**は当面 Notifier アダプタ側に置く | `port.NotifyItem` に `PayloadHash` を持たせて `application` が詰める / `Notifier` は送否だけ返し `application` が `model.Notification` を組み立てる | 再通知の判定基準はユースケースの責務であり、層としては `application` 側が素直。ただし現状 Notifier は `slack` / `stdout` の2実装で壊れておらず、動く構造を組み替える価値が今はない。**Notifier が増える Phase 3 で再検討する**（実装が散ると片方だけ古い定義を使う事故が起きうる）。判定（`MaterialHash`・domain）と表示（`Snapshot`・adapter）が対で使われるのに層が割れている点も、この再検討に含める |
+| 2026-07-13 | 正規化は「出社0日」を `(full_remote, nil)` へ寄せる（`OnsiteDays` に 0 を残さない） | 「週0日出社」を `(full_remote, &0)` として出社日数を保持する（現状維持） | 同じ「フルリモート」が `(full_remote, nil)` と `(full_remote, &0)` の2通りで表現でき、`model.materialRemote`（ハッシュの入力）は出社日数まで見て両者を別物と扱うのに、`message.formatRemote`（表示）はフルリモートなら出社日数を捨てる。結果、ソース側の表記が「フルリモート」↔「週0日出社」で揺れただけで再通知が起き、しかも差分行が出ないため**見出し以外まったく同じ通知**が届く。正規化の時点で表現を1本化すれば、ハッシュ側・表示側のどちらも触らずに解消する（`MaterialHash` の golden 値も変わらない）。不変条件「ハッシュが変わるなら必ず差分を1行以上出せる」は `message` のプロパティテスト（`TestUpdateAlwaysExplainsItself`）で総当たり検証する |
 
 ## 8. スコアリング
 
@@ -470,8 +471,20 @@ Incoming Webhook が概ね 1 msg/sec で、超過すると 429 を返すため�
 
 **スナップショットは `payload_hash`（`model.MaterialHash`）とは別に持つ。** 再通知の判定は
 ハッシュ、差分の表示はスナップショットと役割を分け、ハッシュの入力（内部表現）を
-表示都合で変えない（§7 の ADR）。項目とラベルが両者でずれないことは
-`message` のテストで担保する（`TestSnapshotLabelsMatchMaterialFields`）。
+表示都合で変えない（§7 の ADR）。
+
+判定と表示を別に持つ以上、**「ハッシュが変わったのに差分が1行も出せない」状態を作ってはならない**
+（見出し以外まったく同じ「更新」通知が届き、この機能の目的を自ら破る）。これを不変条件として、
+`message` のテストで担保する。
+
+| テスト | 担保する内容 |
+|---|---|
+| `TestSnapshotLabelsMatchMaterialFields` | 項目とラベルが両者でずれていない |
+| `TestUpdateAlwaysExplainsItself` | `MaterialHash` が変わるなら `Format` は必ず1行以上の差分を出す（正規化が返しうる状態の総当たり） |
+
+ラベルの一致だけでは**値の識別力の差**を検知できない。実際、`normalization.Remote` が
+「週0日出社」に `(full_remote, &0)` を返していた頃は、ハッシュは変わるのに表示は
+どちらも「フルリモート」で差分が0行になった（§7 の ADR で正規化側を1本化して解消）。
 
 `material_fields` を持たない行（この機能より前に通知した案件）は空で返り、
 その案件の初回の「更新」通知だけ差分行を出さず、見出しのみへフォールバックする。
