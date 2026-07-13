@@ -7,6 +7,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/model"
+	"github.com/RikuShimoida/job-hunt-agent/internal/normalization"
 )
 
 const (
@@ -53,10 +54,25 @@ func LoadProfile(path string) (model.Profile, error) {
 	if err := yaml.Unmarshal(b, &p); err != nil {
 		return p, fmt.Errorf("failed to parse profile %s: %w", path, err)
 	}
+
+	normalizeSkills(&p)
+
 	if err := ValidateProfile(p); err != nil {
 		return p, err
 	}
 	return p, nil
+}
+
+// normalizeSkills はプロフィール側のスキル・役割を案件側と同じ正規名へ寄せる。
+//
+// 照合時に小文字化するだけでは足りないのは、案件側が normalization.Skills() で
+// 「k8s → Kubernetes」まで寄せられており、プロフィールを素通しにすると
+// 同じスキルが一致せず加点が落ちるため。
+func normalizeSkills(p *model.Profile) {
+	p.RequiredSkills = normalization.Skills(p.RequiredSkills)
+	p.PreferredSkills = normalization.Skills(p.PreferredSkills)
+	p.LearningSkills = normalization.Skills(p.LearningSkills)
+	p.DesiredRoles = normalization.Skills(p.DesiredRoles)
 }
 
 // ValidateProfile はプロフィールの整合性を検証する。

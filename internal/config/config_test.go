@@ -155,6 +155,63 @@ func TestLoadProfileReturnsSentinelOnInvalidYAML(t *testing.T) {
 	}
 }
 
+// TestLoadProfileNormalizesSkills は、プロフィール側のスキル表記が
+// 案件側と同じ正規名へ寄せられることを確かめる。
+//
+// 案件側は normalization.Skills() で「k8s → Kubernetes」まで寄せられるため、
+// プロフィールを素通しにすると同じスキルが一致せず加点が丸ごと落ちる。
+func TestLoadProfileNormalizesSkills(t *testing.T) {
+	t.Parallel()
+
+	body := `search_status: searching
+required_skills:
+  - k8s
+  - java
+preferred_skills:
+  - TS
+  - js
+learning_skills:
+  - golang
+desired_roles:
+  - scrum
+`
+	path := filepath.Join(t.TempDir(), "profile.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("failed to write profile: %v", err)
+	}
+
+	p, err := config.LoadProfile(path)
+	if err != nil {
+		t.Fatalf("LoadProfile() returned error: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		got  []string
+		want []string
+	}{
+		{name: "required_skills", got: p.RequiredSkills, want: []string{"Kubernetes", "Java"}},
+		{name: "preferred_skills", got: p.PreferredSkills, want: []string{"TypeScript", "JavaScript"}},
+		{name: "learning_skills", got: p.LearningSkills, want: []string{"Go"}},
+		{name: "desired_roles", got: p.DesiredRoles, want: []string{"スクラム"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if len(tt.got) != len(tt.want) {
+				t.Fatalf("%s = %v, want %v", tt.name, tt.got, tt.want)
+			}
+			for i := range tt.want {
+				if tt.got[i] != tt.want[i] {
+					t.Errorf("%s[%d] = %q, want %q", tt.name, i, tt.got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestValidateSources(t *testing.T) {
 	t.Parallel()
 
