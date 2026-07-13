@@ -55,6 +55,16 @@ make run-dry
 - `config/sources.yaml` — 各ソースの有効／無効・種別・パス
 - `.env` — `DATABASE_URL`（既定 `./job-hunt-agent.db`）、`LOG_LEVEL`（既定 `info`）
 
+設定のうち、解釈を間違えやすい2つ。
+
+- **`remote_required: true` は「出社0日のみ許容」**。常駐だけでなく、
+  ハイブリッド（週N日出社）の案件も除外する。出社を許容したい場合は
+  `remote_required: false` + `max_onsite_days: N` を使う（両者は同時指定できない）。
+- **`excluded_keywords` は案件名と概要だけを照合する**。メール原文までは見ない
+  （「常駐必須ではありません」のような否定文や署名・引用で誤除外されるため）。
+
+`run` / `collect` は Ctrl-C（SIGINT）と SIGTERM で中断できる。
+
 求職状態は3つ。
 
 | `search_status` | 挙動 |

@@ -75,7 +75,7 @@ CLI（単一バイナリ）。定期実行は GitHub Actions の schedule また
 
 | 変数 | 既定値 | 用途 |
 |---|---|---|
-| `DATABASE_URL` | `./job-hunt-agent.db` | SQLite のファイルパス |
+| `DATABASE_URL` | `./job-hunt-agent.db` | SQLite のファイルパス。`internal/platform/database` が `file:<path>?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)` へ組み立てる（`file:` 付き・クエリ付きの DSN を渡した場合も pragma を追記する） |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`。未知の値は `info` として扱う |
 | `SLACK_WEBHOOK_URL` | — | Phase 2 以降。Phase 1 では未使用 |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REFRESH_TOKEN` | — | Phase 3 以降。Phase 1 では未使用 |
@@ -174,6 +174,9 @@ cli → bootstrap → application → domain/port → domain/model
 
 グローバルフラグ: `--profile`（既定 `config/profile.yaml`）/ `--sources`（既定 `config/sources.yaml`）。
 
+`main` は `signal.NotifyContext` で SIGINT（Ctrl-C）/ SIGTERM を受け取り、`ctx` をキャンセルする。
+コネクタ・通知・DB アクセスはこの `ctx` を受け取り、中断時に途中で抜ける。
+
 Phase 1 では Slack への実送信が未実装のため、`notify` / `run` は `--dry-run` が必須。
 省略すると `cli.ErrDryRunRequired` を返す。
 
@@ -242,14 +245,21 @@ type Notifier interface {
 | 2026-07-13 | テストは標準 `testing` のみ（testify を使わない） | testify | CLAUDE.md / README がテーブル駆動の標準 `testing` を確定事項としている。構造体比較の差分表示が必要になった時点で `go-cmp` を検討する |
 | 2026-07-13 | フルリモートは「リモート20点 + 出社頻度10点」の計30点 | フルリモートを20点のままにする | 元仕様は両者を別配点として合計100点に積んでいるが、実際には排他でフルリモート案件が100点に到達できない。フルリモートを「出社0日 = 許容範囲内」とみなして両方を加点する |
 | 2026-07-13 | 月額以外の単価（時給）は `minimum_rate` / `target_rate` と比較しない | 月間稼働時間で月額へ換算して比較する | 換算に使う時間数が案件側の実稼働と一致する保証がなく、換算値で除外すると良案件を取りこぼす。比較不能として除外も加点もせず、減点理由に残す |
+| 2026-07-13 | `remote_required: true` はハイブリッド案件も除外する（「出社0日のみ許容」と解釈） | ハイブリッドを加点0で通す（現状維持） | 加点0で通すと、スキル・役割・時期・稼働の加点だけで通知閾値（`searching`=60）を超え、フルリモート必須の利用者へ出社ありの案件が届く。`ValidateProfile` が `remote_required` と `max_onsite_days > 0` の同時指定を禁じている以上、`remote_required` は「出社0日のみ許容」の意図。出社を許容する運用は `remote_required: false` + `max_onsite_days: N` で表現する |
+| 2026-07-13 | `excluded_keywords` の照合対象は案件名（`title`）＋概要（`summary`）のみ | メール原文（`raw_text`）を含めた本文全体を照合する（現状維持） | 原文には「常駐必須ではありません」のような否定文や署名・引用が混ざり、部分一致で誤除外が起きる。除外は `score=0` の終端判定であり通知に一切出ないため、誤除外の損失が取りこぼしより大きい。原文まで見るなら否定表現の解釈が必要になり、それは Phase 6（抽出精度の改善）の課題 |
+| 2026-07-13 | 単価の「万」表記は範囲表記を先に照合し、単一表記へフォールバックする | 単一の正規表現で「万」を任意扱いにする（現状維持） | 「65万〜90万円」のように区切りの両側へ「万」が付く表記で先頭の 65万 だけが拾われ、上限が捨てられる。`minimum_rate` を下回る扱いになり最大90万円の優良案件が誤除外される |
+| 2026-07-13 | SQLite の `PRAGMA` は DSN（`_pragma=foreign_keys(1)`）へ寄せる | `db.ExecContext(ctx, "PRAGMA foreign_keys = ON")` で発行する（現状維持） | `database/sql` のプールが払い出す1コネクションにしか効かず、2本目以降で外部キーが無効に戻る（実測で `conn1=1 / conn2=0`）。DSN へ載せると全コネクションへ適用される。あわせて `busy_timeout` も設定し、定期実行が重なったときの `SQLITE_BUSY` を防ぐ |
 
 ## 8. スコアリング
 
 ### 除外条件（1つでも該当したら `rejected`。点数は付けない）
 
 - 月額単価が `minimum_rate` を下回る（**月額表記の案件のみ**。時給案件は比較しない）
-- `remote_required` かつ案件が `onsite`
-- `excluded_keywords` が案件名・概要・本文のいずれかに含まれる
+- `remote_required` かつ案件が `onsite` **または `hybrid`**
+  （`remote_required` は「出社0日のみ許容」の意味。週N日出社のハイブリッドも除外する。
+  出社を許容する運用は `remote_required: false` + `max_onsite_days: N` で表現する）
+- `excluded_keywords` が**案件名（`title`）または概要（`summary`）**に含まれる
+  （メール原文 `raw_text` は照合しない。否定文・署名・引用での誤除外を避けるため）
 - `contract_types` に無い契約形態
 
 ### 配点（合計100点）
