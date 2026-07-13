@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -374,6 +375,58 @@ func TestNotifyRetriesFailedJobOnNextRun(t *testing.T) {
 	job, _ = repo.jobByID(id)
 	if job.Status != model.JobStatusNotified {
 		t.Errorf("再送後の Status = %q, want notified", job.Status)
+	}
+}
+
+// TestNotifyPersistsSentJobsOnCancel は、送信途中で ctx がキャンセルされても
+// 送信済みの案件が通知履歴に残り、notified になることを確かめる。
+//
+// 記録を送信と同じ ctx で行うと、中断時に「Slack には届いたのに記録されない」状態になり、
+// 次回実行で同じ案件が再送される（重複通知）。
+func TestNotifyPersistsSentJobsOnCancel(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	repo := newFakeRepository()
+	sent := saveScoredJob(t, repo, "送信済み案件", 92)
+	unsent := saveScoredJob(t, repo, "未送信案件", 80)
+
+	// 1件送った直後に中断させる。
+	notifier := &fakeNotifier{cancel: cancel, cancelAfter: 1}
+	n := application.NewNotifier(repo, notifier, discardLogger())
+
+	summary, err := n.Notify(ctx, searchingOnly())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Notify() error = %v, want context.Canceled でラップされたエラー", err)
+	}
+
+	if summary.SentCount != 1 {
+		t.Errorf("SentCount = %d, want 1", summary.SentCount)
+	}
+
+	records := repo.notificationsFor(sent)
+	if len(records) != 1 || records[0].Result != model.NotificationResultSuccess {
+		t.Fatalf("送信済み案件の通知履歴 = %+v, want result=success が1件（中断で記録が失われている）",
+			records)
+	}
+
+	job, ok := repo.jobByID(sent)
+	if !ok {
+		t.Fatal("案件が保存されていない")
+	}
+	if job.Status != model.JobStatusNotified {
+		t.Errorf("送信済み案件の Status = %q, want notified（次回実行で再送されてしまう）",
+			job.Status)
+	}
+
+	// 送らなかった案件は通知済みにしない（次回実行で送る）。
+	if got := repo.notificationsFor(unsent); len(got) != 0 {
+		t.Errorf("未送信案件の通知履歴 = %+v, want 0件", got)
+	}
+	if job, _ := repo.jobByID(unsent); job.Status == model.JobStatusNotified {
+		t.Error("送っていない案件が notified になっている")
 	}
 }
 

@@ -50,7 +50,7 @@ CLI（単一バイナリ）。定期実行は GitHub Actions の schedule また
 | 2 | Slack Incoming Webhook 接続と通知済み管理 | **完了** |
 | 3 | Gmail 読み取り専用 OAuth と案件メール解析 | 未着手 |
 | 4 | 公開 Web コネクタ（実装前に公開取得の可否と利用条件を確認する） | 未着手 |
-| 5 | 類似度ベースの重複排除・リトライ・構造変更検知・実行履歴強化・`status` サブコマンド | 未着手 |
+| 5 | 類似度ベースの重複排除・リトライ・構造変更検知・実行履歴強化・「更新」通知への変更内容表示・`status` サブコマンド | 未着手 |
 | 6 | 案件ソースの追加、抽出精度とスコア重みの実データ改善 | 未着手 |
 
 ## 2. 技術構成
@@ -211,6 +211,10 @@ cli → bootstrap → application → domain/port → domain/model
 
 `collect` / `score` は案件通知を行わないため、`SLACK_WEBHOOK_URL` を要求しない
 （内部的には dry-run 相当で組み立てる）。ソース取得失敗を Slack へ送るのは `run`（`--dry-run` なし）。
+`collect` 単体は手元での確認用と位置づけ、定期実行の入口は `run` とする（§7 の ADR）。
+
+`notify` / `run` は、1件でも送信に失敗すると `cli.ErrNotifyFailed` で**非ゼロ終了**する
+（§9「送信失敗と終了コード」）。
 
 `status` サブコマンドは Phase 5（実行履歴の強化）で実装する。
 
@@ -268,6 +272,7 @@ type ErrorNotifier interface {
 | `model.ErrUnknownSource` | `internal/domain/model` | 指定されたソースが設定に存在しない |
 | `model.ErrMissingWebhookURL` | `internal/domain/model` | 実送信に必要な Webhook URL が未設定 |
 | `slack.ErrSend` | `internal/notifier/slack` | Slack への送信が失敗した |
+| `cli.ErrNotifyFailed` | `internal/cli` | 通知の一部または全部を送信できなかった（`notify` / `run` を非ゼロ終了させる） |
 
 すべて `fmt.Errorf("...: %w", err)` でラップし、`errors.Is` で判別できる状態を保つ。
 
@@ -282,6 +287,8 @@ type ErrorNotifier interface {
 - 抽出できない項目は null として保存し、パイプライン全体を落とさない
 - **1件の通知が失敗しても残りの案件は送る**。成功した案件は `notified` として確定し、
   失敗した案件だけを次回へ持ち越す。全件を未通知へ戻すと、送信済みの案件が再送されて重複通知になる
+- **中断（SIGINT / SIGTERM）されても、送信済みの記録は残す**（永続化のみ `context.WithoutCancel`。§9）
+- 送信失敗は `cli.ErrNotifyFailed` として終了コードへ出す（記録は残し、次回実行で再送する）
 - リトライは行わない（Phase 5）。失敗は次回実行で自然に再送される
 
 ### 実行サマリ
@@ -317,6 +324,13 @@ type ErrorNotifier interface {
 | 2026-07-13 | Slack の送信エラーは `*url.Error` を剥がしてから返す（`slack` パッケージの出口） | `fmt.Errorf("...: %w", err)` でそのままラップする | `net/http` の送信エラーは `*url.Error` で、`Error()` が **Webhook URL 全体を含む**。素直にラップすると、既存の `collect_jobs.go` の `err.Error()` ロギングと `collection_runs.error_message` / `notifications.error_message` への永続化が受け皿になり、秘密情報がログと DB へ書き出される |
 | 2026-07-13 | `score` は `status=notified` を `scored` へ上書きしない | 無条件に `scored` を代入する（現状維持） | `run` は collect → score → notify の順に走るため、上書きすると2回目の `run` で `notified` が消える。再通知の判定は `notifications` テーブルで行うため再通知バグにはならないが、「送信成功した案件は `notified`」という状態が意味を失う。除外条件に触れた場合は `rejected` が優先される |
 | 2026-07-13 | エラー通知を `port.ErrorNotifier` として別 interface に切り、収集の最後に1回だけ送る | 案件通知の `Notifier` に相乗りさせる / 失敗のたびに送る | 宛先（`SLACK_ERROR_WEBHOOK_URL`）が案件通知と別であり、契約も入力（`SourceFailure`）も異なる。失敗のたびに送ると、ソースが軒並み落ちたときに通知が埋まる |
+| 2026-07-13 | **通知履歴の永続化だけ `context.WithoutCancel(ctx)` を使う**（送信の `ctx` はキャンセル可能なまま） | 送信と同じ `ctx` で `SaveNotification` / `UpdateStatus` を呼ぶ（現状維持） | 中断（Ctrl-C / SIGTERM）時、`slack.Notifier` は送信済みの記録を返して抜けるが、キャンセル済み `ctx` では `ExecContext` が必ず失敗し記録が残らない。結果「Slack には届いたのに通知済みにならない」案件が生まれ、次回実行で再送される（本 PR の目的である重複通知の抑止を自ら破る）。**送信は中断できるが、送信済みの記録は必ず残す**を不変条件とする |
+| 2026-07-13 | `ListNotifiedJobIDs` の `ORDER BY` は `id ASC` のみ | `ORDER BY sent_at ASC, id ASC`（現状維持） | `sent_at` はアプリ側の時刻由来でテキストとして格納され、タイムゾーン表記の混在や時刻の巻き戻りで辞書順が保存順と食い違いうる。古い `payload_hash` が最新として残ると、変更済みの案件が「変更なし」と誤判定されて再通知されない。`id` は AUTOINCREMENT で単調増加するため、第1キーを `sent_at` にする実益がない |
+| 2026-07-13 | 送信失敗（`NotifySummary.FailedCount > 0`）は `cli.ErrNotifyFailed` で**非ゼロ終了**する | exit 0 のまま標準出力にだけ「送信失敗 N件」と出す（現状維持） | GitHub Actions の schedule で回す前提であり、失敗が赤くならないと誰にも届いていないことに気づけない。案件の保存・採点は完了しているためロールバックはせず、失敗した案件は次回実行で再送される（終了コードは「気づかせる」ためだけに使う） |
+| 2026-07-13 | Slack へは案件1件ごとに1秒（`slack.defaultSendInterval`）空けて送る | 待ちなしで連射する（現状維持） / 429 を検出したら以降を打ち切る / 複数案件を1メッセージへまとめる | Incoming Webhook は概ね 1 msg/sec で、初回収集のように通知が10件以上並ぶと後半が 429 で落ちる。429 は「失敗して次回再送」では解けない（次回も同じ速度で送り同じ位置で失敗する）。打ち切りは通知の遅延を生み、1メッセージへの集約は案件ごとの可読性を失う。ウェイトは `time.After` + `ctx.Done()` の `select` で待ち、中断に即応する。間隔はコンストラクタ（`slack.WithSendInterval`）から差し替えられる |
+| 2026-07-13 | 「更新」通知への**変更内容の表示は Phase 5 へ回す** | Phase 2 で `notifications` へ `MaterialFields` のスナップショットを保存し、差分を本文へ載せる | 旧値は `notify` の時点で DB から消えており、差分を出すにはスキーマ追加（前回スナップショットの保存）が必要になる。Phase 2 の受入条件は「重要変更を見逃さず再通知する」であり、変更内容の表示はその上に載る改善。スキーマ変更を伴う以上、実行履歴を強化する Phase 5 でまとめて扱う |
+| 2026-07-13 | `collect` 単体ではエラー通知を Slack へ送らない（`dryRun=true` で組み立てる） | `buildNotifiers` の `DryRun` 分岐を案件通知とエラー通知で分け、`collect` でもエラー通知だけ実送信にする | 定期実行の入口は `run` であり、`collect` 単体は手元での確認用と位置づける。`collect` を実送信として組み立てると、通知を行わないコマンドの副作用として Slack へ投稿が飛び、手元で試すたびにチャンネルが汚れる。`collect` だけを定期実行する運用が現実に出てきた時点で見直す |
+| 2026-07-13 | `payload_hash` の導出（`model.MaterialHash`）は当面 Notifier アダプタ側に置く | `port.NotifyItem` に `PayloadHash` を持たせて `application` が詰める / `Notifier` は送否だけ返し `application` が `model.Notification` を組み立てる | 再通知の判定基準はユースケースの責務であり、層としては `application` 側が素直。ただし現状 Notifier は `slack` / `stdout` の2実装で壊れておらず、動く構造を組み替える価値が今はない。**Notifier が増える Phase 3 で再検討する**（実装が散ると片方だけ古い定義を使う事故が起きうる） |
 
 ## 8. スコアリング
 
@@ -379,6 +393,35 @@ stdout と slack の双方から使う（通知実装どうしが依存し合わ
 HTTP クライアントは 10 秒のタイムアウトを持ち、`http.NewRequestWithContext` で `ctx` の
 キャンセルに追随する。**通知対象が0件なら HTTP リクエストを送らない**（無音）。
 
+### 送信レート
+
+案件は**1件 = 1 POST**で送り、**1件ごとに1秒空ける**（`slack.defaultSendInterval`）。
+Incoming Webhook が概ね 1 msg/sec で、超過すると 429 を返すため。
+最後の送信のあとは待たない。
+
+ウェイトは `time.After` + `ctx.Done()` の `select` で待つ（中断に即応する。`time.Sleep` にしない）。
+間隔は `slack.WithSendInterval` でコンストラクタから差し替えられる（テストが実時間を待たないため）。
+
+リトライは Phase 5。
+
+### 中断（SIGINT / SIGTERM）時の扱い
+
+**送信は中断できるが、送信済みの記録は必ず残す。**
+
+`slack.Notifier` は中断時、そこまでの送信記録を返して抜ける。`application.Notifier` は
+その記録の永続化（`SaveNotification` / `UpdateStatus`）だけを `context.WithoutCancel(ctx)` で行う。
+送信と同じ ctx で永続化すると、キャンセル済み ctx では `ExecContext` が必ず失敗して記録が残らず、
+「Slack には届いたのに通知済みにならない」案件が次回実行で再送される。
+
+### 送信失敗と終了コード
+
+1件でも送信に失敗したら（`NotifySummary.FailedCount > 0`）、`notify` / `run` は
+`cli.ErrNotifyFailed` を返して**非ゼロ終了**する。定期実行（GitHub Actions の schedule）で
+失敗が赤くならないと、通知が届いていないことに気づけないため。
+
+案件の保存・採点は完了しているためロールバックはしない。失敗した案件は `status` が変わらず、
+次回実行で再送される。
+
 ### 通知済み管理
 
 `notifications` は**送信試行ごとに1行 append する監査ログ**（UNIQUE 制約なし。失敗 → 再送の履歴を残す）。
@@ -391,9 +434,16 @@ HTTP クライアントは 10 秒のタイムアウトを持ち、`http.NewReque
 | 通知済みかつ `payload_hash` が同じ | 通知しない |
 | 通知済みかつ `payload_hash` が異なる（= 重要変更あり）かつ再評価後も閾値以上 | **「更新」として通知する**（`【95点・更新】`） |
 
+判定に使う「最新の成功行」は `ORDER BY id ASC` で決める（`sent_at` はアプリ側時刻由来の
+テキストであり、辞書順が保存順と一致する保証がない）。
+
 送信に成功した案件は `notifications`（`result=success`）へ記録し、`job_postings.status` を
 `notified` にする。失敗した案件は `result=failed` + `error_message` を記録し、`status` は変えない
 （次回実行で再送される）。
+
+「更新」通知には**何が変わったか**を載せない（`【95点・更新】` の見出しのみ）。
+旧値は `notify` の時点で DB に残っておらず、差分を出すには前回スナップショットの保存
+（スキーマ追加）が要るため、**Phase 5 で対応する**。
 
 ### 秘密情報の扱い
 

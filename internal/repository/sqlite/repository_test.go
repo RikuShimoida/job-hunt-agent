@@ -534,6 +534,44 @@ func TestNotificationsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestListNotifiedJobIDsOrdersByID は、sent_at が巻き戻っても最後に保存した
+// payload_hash が返ることを確かめる。
+//
+// sent_at はアプリ側の時刻をテキストで保存しており、タイムゾーンや時刻同期で
+// 辞書順が保存順と食い違いうる。sent_at で並べると古い hash が最新として残り、
+// 変更済みの案件が「通知済み・変更なし」と誤判定されて再通知されない。
+func TestListNotifiedJobIDsOrdersByID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo, _ := newRepo(t)
+
+	job := sampleJob("url:https://example.test/jobs/1")
+	if _, err := repo.SaveJob(ctx, &job); err != nil {
+		t.Fatalf("SaveJob() returned error: %v", err)
+	}
+
+	sentAt := time.Date(2026, 7, 13, 9, 0, 0, 0, time.UTC)
+
+	// 先に保存した行のほうが sent_at は新しい（時刻が巻き戻ったケース）。
+	for _, n := range []model.Notification{
+		{JobID: job.ID, Channel: "slack", SentAt: sentAt.Add(time.Hour), PayloadHash: "hash-old", Result: model.NotificationResultSuccess},
+		{JobID: job.ID, Channel: "slack", SentAt: sentAt, PayloadHash: "hash-new", Result: model.NotificationResultSuccess},
+	} {
+		if err := repo.SaveNotification(ctx, &n); err != nil {
+			t.Fatalf("SaveNotification() returned error: %v", err)
+		}
+	}
+
+	notified, err := repo.ListNotifiedJobIDs(ctx)
+	if err != nil {
+		t.Fatalf("ListNotifiedJobIDs() returned error: %v", err)
+	}
+	if notified[job.ID] != "hash-new" {
+		t.Errorf("payload_hash = %q, want hash-new（最後に保存した行を返すべき）", notified[job.ID])
+	}
+}
+
 func TestMigrateIsIdempotent(t *testing.T) {
 	t.Parallel()
 

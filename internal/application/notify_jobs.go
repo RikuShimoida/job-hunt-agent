@@ -59,8 +59,14 @@ func (n *Notifier) Notify(ctx context.Context, p model.Profile) (NotifySummary, 
 
 	// 送信途中で失敗しても、成功した案件はここで確定させる。
 	// 失敗を理由に全件を未通知へ戻すと、送信済みの案件が次回も再送されて重複通知になる。
+	//
+	// 永続化だけ ctx のキャンセルから切り離すのは、Ctrl-C や SIGTERM で中断したときに
+	// 「Slack には届いたのに記録されない」状態を作らないため。記録が残らないと
+	// 次回実行で同じ案件が再送され、この PR の目的（重複通知を出さない）を自ら破る。
+	// 送信側の ctx は元のまま渡し、中断で送信自体は止まるようにしている。
+	persistCtx := context.WithoutCancel(ctx)
 	for i := range records {
-		n.persist(ctx, &records[i], &summary)
+		n.persist(persistCtx, &records[i], &summary)
 	}
 
 	if notifyErr != nil {

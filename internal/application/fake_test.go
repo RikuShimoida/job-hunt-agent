@@ -3,6 +3,7 @@ package application_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/model"
@@ -127,7 +128,13 @@ func (r *fakeRepository) UpdateScore(_ context.Context, job *model.JobPosting) e
 	return nil
 }
 
-func (r *fakeRepository) UpdateStatus(_ context.Context, jobID int64, status model.JobStatus) error {
+// UpdateStatus は ctx がキャンセル済みなら失敗する。実装（sqlite）も
+// キャンセル済み ctx では書き込めないため、中断時の挙動を再現する。
+func (r *fakeRepository) UpdateStatus(ctx context.Context, jobID int64, status model.JobStatus) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("fake repository cannot update status: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -151,7 +158,13 @@ func (r *fakeRepository) SaveRun(_ context.Context, run *model.CollectionRun) er
 	return nil
 }
 
-func (r *fakeRepository) SaveNotification(_ context.Context, n *model.Notification) error {
+// SaveNotification は ctx がキャンセル済みなら失敗する。実装（sqlite）も同様のため、
+// 「送信は済んだが記録できない」中断時の挙動を再現する。
+func (r *fakeRepository) SaveNotification(ctx context.Context, n *model.Notification) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("fake repository cannot save notification: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -253,11 +266,17 @@ type fakeNotifier struct {
 	notified   []port.NotifyItem
 	calls      int
 	failTitles map[string]struct{}
+
+	// cancel と cancelAfter は送信途中の中断（Ctrl-C）を再現する。
+	// cancelAfter 件を送った時点で ctx をキャンセルし、以降は slack.Notifier と同じく
+	// 「そこまでの記録 + 中断エラー」を返す。
+	cancel      context.CancelFunc
+	cancelAfter int
 }
 
 func (n *fakeNotifier) Name() string { return "fake" }
 
-func (n *fakeNotifier) Notify(_ context.Context, items []port.NotifyItem) ([]model.Notification, error) {
+func (n *fakeNotifier) Notify(ctx context.Context, items []port.NotifyItem) ([]model.Notification, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -266,10 +285,15 @@ func (n *fakeNotifier) Notify(_ context.Context, items []port.NotifyItem) ([]mod
 	}
 
 	n.calls++
-	n.notified = append(n.notified, items...)
 
 	records := make([]model.Notification, 0, len(items))
 	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			return records, fmt.Errorf("notify canceled: %w", err)
+		}
+
+		n.notified = append(n.notified, item)
+
 		rec := model.Notification{
 			JobID:       item.Job.ID,
 			Channel:     n.Name(),
@@ -281,6 +305,10 @@ func (n *fakeNotifier) Notify(_ context.Context, items []port.NotifyItem) ([]mod
 			rec.ErrorMessage = errNotifyFailed.Error()
 		}
 		records = append(records, rec)
+
+		if n.cancel != nil && len(records) >= n.cancelAfter {
+			n.cancel()
+		}
 	}
 	return records, nil
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/RikuShimoida/job-hunt-agent/internal/application"
 	"github.com/RikuShimoida/job-hunt-agent/internal/bootstrap"
 	"github.com/RikuShimoida/job-hunt-agent/internal/config"
 )
@@ -18,6 +19,9 @@ const (
 	defaultProfilePath = "config/profile.yaml"
 	defaultSourcesPath = "config/sources.yaml"
 )
+
+// ErrNotifyFailed は通知の一部または全部を送信できなかったことを示す。
+var ErrNotifyFailed = errors.New("notify failed")
 
 type globalFlags struct {
 	profilePath string
@@ -185,7 +189,7 @@ func newNotifyCommand(g *globalFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return printNotifySummary(cmd, summary.TargetCount, summary.SentCount, summary.FailedCount)
+			return reportNotify(cmd.OutOrStdout(), summary)
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Slack へ送らず標準出力に表示する")
@@ -209,18 +213,27 @@ func newRunCommand(g *globalFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return printNotifySummary(cmd,
-				summary.Notify.TargetCount, summary.Notify.SentCount, summary.Notify.FailedCount)
+			return reportNotify(cmd.OutOrStdout(), summary.Notify)
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Slack へ送らず標準出力に表示する")
 	return cmd
 }
 
-func printNotifySummary(cmd *cobra.Command, target, sent, failed int) error {
-	_, err := fmt.Fprintf(cmd.OutOrStdout(),
-		"通知対象 %d件 / 送信成功 %d件 / 送信失敗 %d件\n", target, sent, failed)
-	return err
+// reportNotify は通知結果を出力し、1件でも送信に失敗していれば ErrNotifyFailed を返す。
+//
+// 失敗を終了コードへ出さないと、定期実行（cron / GitHub Actions）が成功扱いで終わり、
+// 誰にも届いていないことに気づけない。案件の保存・採点は済んでいるためロールバックはせず、
+// 失敗した案件は次回実行で再送される。
+func reportNotify(out io.Writer, s application.NotifySummary) error {
+	if _, err := fmt.Fprintf(out, "通知対象 %d件 / 送信成功 %d件 / 送信失敗 %d件\n",
+		s.TargetCount, s.SentCount, s.FailedCount); err != nil {
+		return fmt.Errorf("failed to write output: %w", err)
+	}
+	if s.FailedCount > 0 {
+		return fmt.Errorf("%w: %d件の送信に失敗しました", ErrNotifyFailed, s.FailedCount)
+	}
+	return nil
 }
 
 // newApp を collect / score が dryRun=true で呼ぶのは、この2つが案件通知を行わないため。

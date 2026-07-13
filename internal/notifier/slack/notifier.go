@@ -26,6 +26,11 @@ var ErrSend = errors.New("slack send failed")
 // 応答が返らないまま定期実行がぶら下がり続けるのを防ぐ。
 const defaultTimeout = 10 * time.Second
 
+// defaultSendInterval は案件を1件送るごとに空ける間隔。
+// Slack の Incoming Webhook は秒間1メッセージを超えると 429 を返すため、
+// 初回収集のように通知が10件以上並ぶと後半が落ちる。
+const defaultSendInterval = time.Second
+
 // webhook は Incoming Webhook 1本への POST 口。
 type webhook struct {
 	url    string
@@ -84,15 +89,51 @@ func stripURL(err error) error {
 
 // Notifier は案件通知を Slack へ送る。
 type Notifier struct {
-	wh  *webhook
-	now func() time.Time
+	wh       *webhook
+	now      func() time.Time
+	interval time.Duration
 }
 
-func New(webhookURL string) *Notifier {
-	return &Notifier{wh: newWebhook(webhookURL), now: time.Now}
+// Option は Notifier の任意設定。
+type Option func(*Notifier)
+
+// WithSendInterval は案件1件ごとのウェイトを差し替える。0 以下ならウェイトしない。
+// テストを実時間で待たせないために、間隔を外から与えられるようにしている。
+func WithSendInterval(d time.Duration) Option {
+	return func(n *Notifier) { n.interval = d }
+}
+
+func New(webhookURL string, opts ...Option) *Notifier {
+	n := &Notifier{
+		wh:       newWebhook(webhookURL),
+		now:      time.Now,
+		interval: defaultSendInterval,
+	}
+	for _, opt := range opts {
+		opt(n)
+	}
+	return n
 }
 
 func (n *Notifier) Name() string { return "slack" }
+
+// wait は次の送信までウェイトする。
+// time.Sleep にしないのは、中断しても最大1秒ぶら下がり続けるため。
+func (n *Notifier) wait(ctx context.Context) error {
+	if n.interval <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(n.interval)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("notify canceled: %w", ctx.Err())
+	case <-timer.C:
+		return nil
+	}
+}
 
 // Notify は案件を1件ずつ送り、成功・失敗の記録を返す。
 //
@@ -104,9 +145,17 @@ func (n *Notifier) Notify(ctx context.Context, items []port.NotifyItem) ([]model
 	}
 
 	records := make([]model.Notification, 0, len(items))
-	for _, item := range items {
+	for i, item := range items {
 		if err := ctx.Err(); err != nil {
 			return records, fmt.Errorf("notify canceled: %w", err)
+		}
+
+		// 待つのは2件目以降だけ。最後の送信のあとに待っても 429 は避けられず、
+		// 実行時間が伸びるだけになる。
+		if i > 0 {
+			if err := n.wait(ctx); err != nil {
+				return records, err
+			}
 		}
 
 		rec := model.Notification{

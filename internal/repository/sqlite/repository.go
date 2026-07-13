@@ -347,8 +347,10 @@ func (r *Repository) SaveNotification(ctx context.Context, n *model.Notification
 // 失敗行（result = failed）を含めないのは、送信できなかった案件を通知済み扱いにすると
 // 次回実行で再送されず、取りこぼすため。
 func (r *Repository) ListNotifiedJobIDs(ctx context.Context) (_ map[int64]string, err error) {
+	// sent_at で並べないのは、アプリ側の時刻をテキストで保存しており
+	// 辞書順が時刻順と一致する保証がないため。id は AUTOINCREMENT で単調増加する。
 	const q = `SELECT job_id, payload_hash FROM notifications
-		WHERE result = ? ORDER BY sent_at ASC, id ASC`
+		WHERE result = ? ORDER BY id ASC`
 
 	rows, err := r.db.QueryContext(ctx, q, string(model.NotificationResultSuccess))
 	if err != nil {

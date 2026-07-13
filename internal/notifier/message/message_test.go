@@ -121,21 +121,109 @@ func TestFormatHandlesMissingValues(t *testing.T) {
 	}
 }
 
-func TestFormatHourlyRate(t *testing.T) {
+// TestFormatRate は単価表記を検証する。
+//
+// 片側だけ抽出できた単価を「不明」に丸めると、payload_hash（model.MaterialHash）は
+// 変わるのに本文が前回と同一になり、中身の変わらない「更新」通知が飛ぶ。
+// nil 判定は model.MaterialHash 側（両方 nil のときだけ「不明」）と揃える。
+func TestFormatRate(t *testing.T) {
 	t.Parallel()
 
-	rate := 5000
-	job := model.JobPosting{
-		Title:    "時給案件",
-		RateType: model.RateTypeHourly,
-		RateMin:  &rate,
-		RateMax:  &rate,
+	tests := []struct {
+		name     string
+		rateType model.RateType
+		min      *int
+		max      *int
+		want     string
+	}{
+		{
+			name:     "月額の範囲",
+			rateType: model.RateTypeMonthly,
+			min:      ptr(750000),
+			max:      ptr(850000),
+			want:     "750000〜850000円",
+		},
+		{
+			name:     "上限と下限が同じなら1つだけ出す",
+			rateType: model.RateTypeMonthly,
+			min:      ptr(750000),
+			max:      ptr(750000),
+			want:     "750000円",
+		},
+		{
+			name:     "上限だけ抽出できなければ下限からの表記にする",
+			rateType: model.RateTypeMonthly,
+			min:      ptr(750000),
+			max:      nil,
+			want:     "750000円〜",
+		},
+		{
+			name:     "下限だけ抽出できなければ上限までの表記にする",
+			rateType: model.RateTypeMonthly,
+			min:      nil,
+			max:      ptr(850000),
+			want:     "〜850000円",
+		},
+		{
+			name:     "両方とも抽出できなければ不明",
+			rateType: model.RateTypeUnknown,
+			min:      nil,
+			max:      nil,
+			want:     "不明",
+		},
+		{
+			name:     "時給は単位を変える",
+			rateType: model.RateTypeHourly,
+			min:      ptr(5000),
+			max:      ptr(5000),
+			want:     "5000円/時",
+		},
+		{
+			name:     "時給で上限だけ抽出できない",
+			rateType: model.RateTypeHourly,
+			min:      ptr(5000),
+			max:      nil,
+			want:     "5000円/時〜",
+		},
 	}
 
-	if out := message.Format(job, false); !strings.Contains(out, "5000円/時") {
-		t.Errorf("時給表記が出ていない: %q", out)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			job := model.JobPosting{
+				Title:    "単価表記の案件",
+				RateType: tt.rateType,
+				RateMin:  tt.min,
+				RateMax:  tt.max,
+			}
+
+			out := message.Format(job, false)
+			if want := "単価：" + tt.want + "　"; !strings.Contains(out, want) {
+				t.Errorf("本文に %q が含まれていない\n--- 本文 ---\n%s", want, out)
+			}
+		})
 	}
 }
+
+// TestFormatRateDiffersOnOneSidedChange は、重要変更として検知される単価の変化が
+// 本文にも現れることを確かめる（本文が同一のままの「更新」通知を防ぐ）。
+func TestFormatRateDiffersOnOneSidedChange(t *testing.T) {
+	t.Parallel()
+
+	before := model.JobPosting{Title: "案件", RateType: model.RateTypeMonthly, RateMin: ptr(750000)}
+	after := model.JobPosting{Title: "案件", RateType: model.RateTypeMonthly, RateMin: ptr(900000)}
+
+	if model.MaterialHash(before) == model.MaterialHash(after) {
+		t.Fatal("前提が崩れている: 片側だけの単価変更が重要変更として検知されていない")
+	}
+	// 見出し（新着 / 更新）以外に差が出ることを見るため、同じ update で比べる。
+	if message.Format(before, true) == message.Format(after, true) {
+		t.Error("単価が変わったのに本文が同一（中身の変わらない「更新」通知になる）")
+	}
+}
+
+func ptr(v int) *int { return &v }
 
 func TestFormatHybridShowsOnsiteDays(t *testing.T) {
 	t.Parallel()

@@ -57,18 +57,27 @@ func FormatFailures(failures []model.SourceFailure) string {
 	return b.String()
 }
 
+// formatRate の nil 判定を model.materialRate（両方 nil のときだけ「不明」）へ揃えている。
+// 片側 nil を「不明」に丸めると、単価が片側だけ変わった案件で payload_hash は変わるのに
+// 本文は前回と同一になり、中身の変わらない「更新」通知が飛ぶ。
 func formatRate(job model.JobPosting) string {
-	if job.RateMin == nil || job.RateMax == nil {
+	if job.RateMin == nil && job.RateMax == nil {
 		return "不明"
 	}
 	unit := "円"
 	if job.RateType == model.RateTypeHourly {
 		unit = "円/時"
 	}
-	if *job.RateMin == *job.RateMax {
+	switch {
+	case job.RateMax == nil:
+		return fmt.Sprintf("%d%s〜", *job.RateMin, unit)
+	case job.RateMin == nil:
+		return fmt.Sprintf("〜%d%s", *job.RateMax, unit)
+	case *job.RateMin == *job.RateMax:
 		return fmt.Sprintf("%d%s", *job.RateMin, unit)
+	default:
+		return fmt.Sprintf("%d〜%d%s", *job.RateMin, *job.RateMax, unit)
 	}
-	return fmt.Sprintf("%d〜%d%s", *job.RateMin, *job.RateMax, unit)
 }
 
 func formatWorkDays(job model.JobPosting) string {

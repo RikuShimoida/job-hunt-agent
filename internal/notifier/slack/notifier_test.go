@@ -256,7 +256,8 @@ func TestNotifyContinuesAfterFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	n := slack.New(srv.URL)
+	// 送信間隔はこのテストの関心事ではない。実時間を待たせないため 0 にする。
+	n := slack.New(srv.URL, slack.WithSendInterval(0))
 
 	records, err := n.Notify(context.Background(), []port.NotifyItem{
 		{Job: job(1, "案件A", 92)},
@@ -386,6 +387,111 @@ func TestNotifyErrorSendsNothingWithoutFailures(t *testing.T) {
 	}
 	if rec.requestCount() != 0 {
 		t.Errorf("失敗が無いのに POST が %d回飛んだ, want 0回", rec.requestCount())
+	}
+}
+
+// TestNotifyWaitsBetweenSends は、案件を続けて送るときに間隔が空くことを確かめる。
+//
+// Slack の Incoming Webhook は秒間1メッセージを超えると 429 を返すため、
+// 初回収集のように通知が並ぶと後半が落ちる。
+func TestNotifyWaitsBetweenSends(t *testing.T) {
+	t.Parallel()
+
+	const interval = 200 * time.Millisecond
+
+	rec := &recorder{}
+	srv := httptest.NewServer(rec.handler())
+	defer srv.Close()
+
+	n := slack.New(srv.URL, slack.WithSendInterval(interval))
+
+	start := time.Now()
+	records, err := n.Notify(context.Background(), []port.NotifyItem{
+		{Job: job(1, "案件A", 92)},
+		{Job: job(2, "案件B", 88)},
+		{Job: job(3, "案件C", 70)},
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Notify() returned error: %v", err)
+	}
+	if len(records) != 3 || rec.requestCount() != 3 {
+		t.Fatalf("送信記録 %d件 / POST %d回, want どちらも3", len(records), rec.requestCount())
+	}
+
+	// 3件なら間隔は2回ぶん空く。
+	if want := 2 * interval; elapsed < want {
+		t.Errorf("所要時間 = %v, want %v 以上（送信間隔が空いていない）", elapsed, want)
+	}
+}
+
+// TestNotifyDoesNotWaitAfterLastSend は、最後の送信のあとに待たないことを確かめる。
+// 待っても 429 は避けられず、実行時間が伸びるだけになる。
+func TestNotifyDoesNotWaitAfterLastSend(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorder{}
+	srv := httptest.NewServer(rec.handler())
+	defer srv.Close()
+
+	// 最後に待つ実装なら10秒かかる。
+	n := slack.New(srv.URL, slack.WithSendInterval(10*time.Second))
+
+	start := time.Now()
+	if _, err := n.Notify(context.Background(),
+		[]port.NotifyItem{{Job: job(1, "案件", 92)}}); err != nil {
+		t.Fatalf("Notify() returned error: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if elapsed > time.Second {
+		t.Errorf("1件の送信に %v かかった（最後の送信後にウェイトしている）", elapsed)
+	}
+	if rec.requestCount() != 1 {
+		t.Errorf("POST 回数 = %d, want 1", rec.requestCount())
+	}
+}
+
+// TestNotifyCancelDuringWaitReturnsImmediately は、送信間隔の待機中に
+// 中断されたら即座に抜けることを確かめる（Ctrl-C がウェイトぶん効かないと困る）。
+func TestNotifyCancelDuringWaitReturnsImmediately(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rec := &recorder{}
+	srv := httptest.NewServer(rec.handler())
+	defer srv.Close()
+
+	// time.Sleep で待つ実装なら10秒ぶら下がる。
+	n := slack.New(srv.URL, slack.WithSendInterval(10*time.Second))
+
+	// 1件目の POST（ローカルの httptest 宛でミリ秒オーダー）は終わり、
+	// 2件目の前のウェイトに入っているタイミングで中断する。
+	time.AfterFunc(250*time.Millisecond, cancel)
+
+	start := time.Now()
+	records, err := n.Notify(ctx, []port.NotifyItem{
+		{Job: job(1, "案件A", 92)},
+		{Job: job(2, "案件B", 88)},
+	})
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled でラップされていること", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("中断までに %v かかった（ウェイトが ctx のキャンセルで抜けていない）", elapsed)
+	}
+
+	// 送信できた1件は記録として返す（呼び出し側が通知済みとして確定させる）。
+	if len(records) != 1 || records[0].Result != model.NotificationResultSuccess {
+		t.Fatalf("送信記録 = %+v, want success が1件", records)
+	}
+	if rec.requestCount() != 1 {
+		t.Errorf("POST 回数 = %d, want 1（中断後も送信している）", rec.requestCount())
 	}
 }
 
