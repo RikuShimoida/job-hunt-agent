@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strings"
 
 	_ "modernc.org/sqlite" // CGO 不要な SQLite ドライバ
 
@@ -14,22 +15,42 @@ import (
 )
 
 // Open は SQLite を開き、未適用のマイグレーションを昇順に適用する。
-func Open(ctx context.Context, dsn string) (*sql.DB, error) {
+// path は DATABASE_URL の値（ファイルパス、または file: 形式の DSN）。
+func Open(ctx context.Context, path string) (*sql.DB, error) {
+	dsn := buildDSN(path)
+
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database %s: %w", dsn, err)
+		return nil, fmt.Errorf("failed to open database %s: %w", path, err)
 	}
 
 	if err := db.PingContext(ctx); err != nil {
-		return nil, closeWith(db, fmt.Errorf("failed to connect database %s: %w", dsn, err))
-	}
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
-		return nil, closeWith(db, fmt.Errorf("failed to enable foreign keys: %w", err))
+		return nil, closeWith(db, fmt.Errorf("failed to connect database %s: %w", path, err))
 	}
 	if err := Migrate(ctx, db, migrations.FS); err != nil {
 		return nil, closeWith(db, err)
 	}
 	return db, nil
+}
+
+// buildDSN は接続文字列へ pragma を埋め込む。
+//
+// PRAGMA を db.ExecContext で発行しないのは、database/sql のプールが
+// そのとき払い出した1コネクションにしか効かず、2本目以降のコネクションで
+// 外部キーが無効に戻るため。DSN に載せると全コネクションへ適用される。
+//
+// busy_timeout は、定期実行が重なったときの SQLITE_BUSY を防ぐ。
+func buildDSN(path string) string {
+	dsn := path
+	if !strings.HasPrefix(dsn, "file:") {
+		dsn = "file:" + dsn
+	}
+
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return dsn + sep + "_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 }
 
 // closeWith は失敗した Open の後始末をする。close 自体の失敗も握り潰さず、
