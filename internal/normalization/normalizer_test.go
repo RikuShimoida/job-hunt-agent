@@ -195,6 +195,14 @@ func TestRemote(t *testing.T) {
 			wantType:   model.RemoteTypeHybrid,
 			wantOnsite: ptr(2),
 		},
+		{
+			// 出社0日は「フルリモート」と同じ状態へ寄せる。OnsiteDays に 0 を残すと
+			// 同じ意味が2通りで表現でき、表記の揺れだけで本文が同一の「更新」通知が飛ぶ。
+			name:       "週0日出社はフルリモートと同じ状態へ寄せる",
+			input:      "週0日出社",
+			wantType:   model.RemoteTypeFullRemote,
+			wantOnsite: nil,
+		},
 		{name: "空文字は unknown", input: "", wantType: model.RemoteTypeUnknown, wantOnsite: nil},
 		{name: "判別できない文言は unknown", input: "応相談", wantType: model.RemoteTypeUnknown, wantOnsite: nil},
 	}

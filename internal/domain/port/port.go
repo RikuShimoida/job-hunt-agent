@@ -45,9 +45,18 @@ type Repository interface {
 
 	SaveNotification(ctx context.Context, n *model.Notification) error
 
-	// ListNotifiedJobIDs は送信に成功した通知の job_id → payload_hash を返す。
-	// 同じ案件に複数の成功行がある場合は最新の payload_hash を返す。
-	ListNotifiedJobIDs(ctx context.Context) (map[int64]string, error)
+	// ListNotifiedJobs は送信に成功した通知を job_id ごとに返す。
+	// 同じ案件に複数の成功行がある場合は最新の1件を返す。
+	ListNotifiedJobs(ctx context.Context) (map[int64]NotifiedJob, error)
+}
+
+// NotifiedJob は送信に成功した最新の通知1件ぶんの記録。
+type NotifiedJob struct {
+	// PayloadHash は再通知の要否判定に使う（重要変更の有無）。
+	PayloadHash string
+	// MaterialFields は前回通知時点のスナップショット。「更新」通知の差分表示に使う。
+	// マイグレーション前に通知した案件では空になる。
+	MaterialFields []string
 }
 
 // NotifyItem は通知1件ぶんの入力。
@@ -59,6 +68,9 @@ type NotifyItem struct {
 	Job model.JobPosting
 	// Update は通知済みの案件に重要変更があって再通知することを示す。
 	Update bool
+	// PrevFields は前回通知時点のスナップショット。Update のときだけ意味を持つ。
+	// 空なら差分を出さず、見出しだけの「更新」通知になる。
+	PrevFields []string
 }
 
 // Notifier は案件通知の送信口。

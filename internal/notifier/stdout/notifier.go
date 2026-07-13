@@ -39,7 +39,7 @@ func (n *Notifier) Notify(ctx context.Context, items []port.NotifyItem) ([]model
 	}
 
 	for _, item := range items {
-		if _, err := fmt.Fprint(n.w, message.Format(item.Job, item.Update)); err != nil {
+		if _, err := fmt.Fprint(n.w, message.Format(item)); err != nil {
 			return nil, fmt.Errorf("failed to write notification: %w", err)
 		}
 	}

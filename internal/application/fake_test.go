@@ -8,6 +8,7 @@ import (
 
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/model"
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/port"
+	"github.com/RikuShimoida/job-hunt-agent/internal/notifier/message"
 )
 
 // errConnectorFailed はフェイクコネクタが返す失敗。
@@ -173,15 +174,18 @@ func (r *fakeRepository) SaveNotification(ctx context.Context, n *model.Notifica
 	return nil
 }
 
-// ListNotifiedJobIDs は成功した通知だけを返す。昇順に上書きするため最新の hash が残る。
-func (r *fakeRepository) ListNotifiedJobIDs(context.Context) (map[int64]string, error) {
+// ListNotifiedJobs は成功した通知だけを返す。昇順に上書きするため最新の1件が残る。
+func (r *fakeRepository) ListNotifiedJobs(context.Context) (map[int64]port.NotifiedJob, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	notified := make(map[int64]string)
+	notified := make(map[int64]port.NotifiedJob)
 	for _, n := range r.notifications {
 		if n.Result == model.NotificationResultSuccess {
-			notified[n.JobID] = n.PayloadHash
+			notified[n.JobID] = port.NotifiedJob{
+				PayloadHash:    n.PayloadHash,
+				MaterialFields: n.MaterialFields,
+			}
 		}
 	}
 	return notified, nil
@@ -294,11 +298,14 @@ func (n *fakeNotifier) Notify(ctx context.Context, items []port.NotifyItem) ([]m
 
 		n.notified = append(n.notified, item)
 
+		// スナップショットの記録まで slack.Notifier と揃える。
+		// ここを省くと、次回の「更新」通知へ旧値が渡らないことをテストが素通しする。
 		rec := model.Notification{
-			JobID:       item.Job.ID,
-			Channel:     n.Name(),
-			PayloadHash: model.MaterialHash(item.Job),
-			Result:      model.NotificationResultSuccess,
+			JobID:          item.Job.ID,
+			Channel:        n.Name(),
+			PayloadHash:    model.MaterialHash(item.Job),
+			MaterialFields: message.Snapshot(item.Job),
+			Result:         model.NotificationResultSuccess,
 		}
 		if _, fail := n.failTitles[item.Job.Title]; fail {
 			rec.Result = model.NotificationResultFailed

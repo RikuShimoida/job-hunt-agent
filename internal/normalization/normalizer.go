@@ -195,8 +195,13 @@ func Remote(s string) (model.RemoteType, *int) {
 
 	if m := onsiteDaysRe.FindStringSubmatch(s); m != nil {
 		if days, err := strconv.Atoi(m[1]); err == nil {
+			// 「週0日出社」で OnsiteDays に 0 を残さないのは、同じ「フルリモート」が
+			// (FullRemote, &0) と (FullRemote, nil) の2通りで表現できてしまうため。
+			// model.materialRemote は出社日数まで見てハッシュを変えるのに、
+			// 表示（message.formatRemote）はフルリモートなら出社日数を捨てる。
+			// 結果、ソース側の表記が揺れただけで「見出し以外まったく同じ更新通知」が飛ぶ。
 			if days == 0 {
-				return model.RemoteTypeFullRemote, &days
+				return model.RemoteTypeFullRemote, nil
 			}
 			return model.RemoteTypeHybrid, &days
 		}

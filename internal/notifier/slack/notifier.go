@@ -159,13 +159,14 @@ func (n *Notifier) Notify(ctx context.Context, items []port.NotifyItem) ([]model
 		}
 
 		rec := model.Notification{
-			JobID:       item.Job.ID,
-			Channel:     n.Name(),
-			SentAt:      n.now(),
-			PayloadHash: model.MaterialHash(item.Job),
-			Result:      model.NotificationResultSuccess,
+			JobID:          item.Job.ID,
+			Channel:        n.Name(),
+			SentAt:         n.now(),
+			PayloadHash:    model.MaterialHash(item.Job),
+			MaterialFields: message.Snapshot(item.Job),
+			Result:         model.NotificationResultSuccess,
 		}
-		if err := n.wh.post(ctx, message.Format(item.Job, item.Update)); err != nil {
+		if err := n.wh.post(ctx, message.Format(item)); err != nil {
 			rec.Result = model.NotificationResultFailed
 			rec.ErrorMessage = err.Error()
 		}
