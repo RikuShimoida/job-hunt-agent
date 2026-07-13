@@ -14,7 +14,8 @@ monthly_hours_min: 100
 monthly_hours_max: 160
 
 # リモート条件
-# remote_required: true のときは max_onsite_days を 0 にすること（両立しない）
+# remote_required: true は「出社0日のみ許容」。常駐だけでなくハイブリッド（週N日出社）も除外する。
+# 出社を許容するなら remote_required: false + max_onsite_days: N を使う（両者は両立しない）
 remote_required: true
 max_onsite_days: 0
 allowed_locations:
@@ -44,7 +45,8 @@ desired_roles:
   - バックエンド
   - SRE
 
-# 避けたい条件（案件本文にこれらが含まれると除外する）
+# 避けたい条件（案件名・概要にこれらが含まれると除外する）
+# メール原文までは照合しない（「常駐必須ではありません」のような否定文で誤除外されるため）
 excluded_keywords:
   - 常駐必須
   - 週5日必須

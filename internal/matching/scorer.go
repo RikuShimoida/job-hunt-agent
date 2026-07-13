@@ -158,8 +158,19 @@ func reject(job model.JobPosting, p model.Profile) []string {
 		p.MinimumRate > 0 && *job.RateMax < p.MinimumRate {
 		out = append(out, fmt.Sprintf("最低希望単価を下回る（%s）", formatRate(job)))
 	}
-	if p.RemoteRequired && job.RemoteType == model.RemoteTypeOnsite {
-		out = append(out, "フルリモート必須だが常駐案件")
+	// remote_required は「出社0日のみ許容」と解釈し、ハイブリッドも除外する。
+	// 加点0で通さないのは、スキル・役割・時期・稼働の加点だけで通知閾値を超え、
+	// フルリモート必須の利用者へ出社ありの案件が届いてしまうため。
+	// 出社を許容する運用は remote_required: false + max_onsite_days: N で表現する
+	// （ValidateProfile が両者の同時指定を禁じているのと整合する）。
+	if p.RemoteRequired {
+		switch job.RemoteType {
+		case model.RemoteTypeOnsite:
+			out = append(out, "フルリモート必須だが常駐案件")
+		case model.RemoteTypeHybrid:
+			out = append(out, "フルリモート必須だが出社を伴う案件")
+		case model.RemoteTypeFullRemote, model.RemoteTypeUnknown:
+		}
 	}
 	if kw := matchedKeyword(job, p.ExcludedKeywords); kw != "" {
 		out = append(out, fmt.Sprintf("避けたい条件に該当（%s）", kw))
@@ -171,8 +182,13 @@ func reject(job model.JobPosting, p model.Profile) []string {
 	return out
 }
 
+// matchedKeyword は除外キーワードに該当する語を返す。
+//
+// 照合対象へ RawText を含めないのは、原文全体には「常駐必須ではありません」の
+// ような否定文や署名・引用が混ざり、部分一致で良案件を誤除外するため。
+// 除外は score=0 の終端判定であり、誤除外の損失が取りこぼしより大きい。
 func matchedKeyword(job model.JobPosting, keywords []string) string {
-	haystack := job.Title + "\n" + job.Summary + "\n" + job.RawText
+	haystack := job.Title + "\n" + job.Summary
 	for _, kw := range keywords {
 		kw = strings.TrimSpace(kw)
 		if kw == "" {

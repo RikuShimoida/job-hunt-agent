@@ -110,13 +110,18 @@ func TestPipelineEndToEnd(t *testing.T) {
 		t.Errorf("DuplicateCount = %d, want 1", summary.Collect.DuplicateCount)
 	}
 
-	// 常駐必須の案件は除外される。
-	if summary.Score.RejectedCount < 1 {
-		t.Errorf("RejectedCount = %d, want >= 1（常駐案件が除外されるはず）",
+	// profile.example.yaml は remote_required: true（出社0日のみ許容）。
+	// 保存される5件のうち、出社を伴う次の3件が除外される。
+	//   - PHP 保守運用案件（常駐必須）
+	//   - TypeScript／React フロント刷新案件（リモート可・週1出社）
+	//   - Ruby on Rails 新規開発案件（週2日出社）
+	// 残るフルリモート2件（Java／AWS・Go／Kubernetes）が通知される。
+	if summary.Score.RejectedCount != 3 {
+		t.Errorf("RejectedCount = %d, want 3（出社を伴う案件が除外されるはず）",
 			summary.Score.RejectedCount)
 	}
-	if summary.Notify.NotifiedCount < 1 {
-		t.Fatalf("NotifiedCount = %d, want >= 1", summary.Notify.NotifiedCount)
+	if summary.Notify.NotifiedCount != 2 {
+		t.Fatalf("NotifiedCount = %d, want 2", summary.Notify.NotifiedCount)
 	}
 
 	printed := out.String()
@@ -128,9 +133,15 @@ func TestPipelineEndToEnd(t *testing.T) {
 		}
 	}
 
-	// 除外された常駐案件が通知に混ざっていないこと。
-	if strings.Contains(printed, "PHP 保守運用案件") {
-		t.Errorf("除外されるはずの常駐案件が通知された\n--- 出力 ---\n%s", printed)
+	// 出社を伴う案件が通知に混ざっていないこと。
+	for _, unwanted := range []string{
+		"PHP 保守運用案件",
+		"TypeScript／React フロント刷新案件",
+		"Ruby on Rails 新規開発案件",
+	} {
+		if strings.Contains(printed, unwanted) {
+			t.Errorf("除外されるはずの案件が通知された: %q\n--- 出力 ---\n%s", unwanted, printed)
+		}
 	}
 
 	// 実行サマリがログに残っていること。

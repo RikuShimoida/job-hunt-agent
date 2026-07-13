@@ -70,11 +70,19 @@ func TestEvaluateRejection(t *testing.T) {
 			wantReasonSub: "常駐案件",
 		},
 		{
-			name: "避けたいキーワードを含む案件は除外する",
+			name: "避けたいキーワードを概要に含む案件は除外する",
 			mutate: func(j *model.JobPosting) {
-				j.RawText = "この案件は常駐必須です"
+				j.Summary = "この案件は常駐必須です"
 			},
 			wantReasonSub: "避けたい条件に該当",
+		},
+		{
+			name: "フルリモート必須なのにハイブリッド案件は除外する",
+			mutate: func(j *model.JobPosting) {
+				j.RemoteType = model.RemoteTypeHybrid
+				j.OnsiteDays = ptr(1)
+			},
+			wantReasonSub: "出社を伴う案件",
 		},
 		{
 			name: "希望しない契約形態の案件は除外する",
@@ -273,6 +281,131 @@ func TestEvaluateHybridExceedingAllowedOnsiteDays(t *testing.T) {
 	if !containsSubstring(got.RejectionReasons, "出社頻度が許容範囲を超える") {
 		t.Errorf("RejectionReasons = %v, want to contain 出社頻度が許容範囲を超える",
 			got.RejectionReasons)
+	}
+}
+
+// TestEvaluateExcludedKeywordScope は、除外キーワードの照合範囲が
+// 案件名・概要に限られることを確かめる。
+//
+// メール原文（RawText）まで照合すると「常駐必須ではありません」のような
+// 否定文や署名・引用に部分一致し、良案件が score=0 で通知から消える。
+func TestEvaluateExcludedKeywordScope(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		mutate       func(j *model.JobPosting)
+		wantRejected bool
+	}{
+		{
+			name: "案件名に含まれる場合は除外する",
+			mutate: func(j *model.JobPosting) {
+				j.Title = "【常駐必須】Java 保守案件"
+			},
+			wantRejected: true,
+		},
+		{
+			name: "概要に含まれる場合は除外する",
+			mutate: func(j *model.JobPosting) {
+				j.Summary = "常駐必須のためオフィス勤務となります"
+			},
+			wantRejected: true,
+		},
+		{
+			name: "原文だけに含まれる否定文では除外しない",
+			mutate: func(j *model.JobPosting) {
+				j.RawText = "本案件は常駐必須ではありません。フルリモートで参画いただけます。"
+			},
+			wantRejected: false,
+		},
+		{
+			name: "原文の署名・引用に含まれていても除外しない",
+			mutate: func(j *model.JobPosting) {
+				j.RawText = "--\n過去にご紹介した常駐必須案件の一覧はこちら"
+			},
+			wantRejected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			job := perfectJob()
+			tt.mutate(&job)
+
+			got := matching.Evaluate(job, profile())
+
+			if got.Rejected != tt.wantRejected {
+				t.Errorf("Rejected = %v, want %v (reasons=%v)",
+					got.Rejected, tt.wantRejected, got.RejectionReasons)
+			}
+		})
+	}
+}
+
+// TestEvaluateRemoteRequiredRejectsOnsiteAndHybrid は、remote_required が
+// 「出社0日のみ許容」として解釈されることを確かめる。
+//
+// ハイブリッドを加点0で通すと、スキル・役割・時期・稼働の加点だけで
+// 通知閾値（searching=60）を超え、フルリモート必須の利用者へ届いてしまう。
+func TestEvaluateRemoteRequiredRejectsOnsiteAndHybrid(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		remoteType   model.RemoteType
+		onsiteDays   *int
+		wantRejected bool
+	}{
+		{
+			name:         "フルリモートは通す",
+			remoteType:   model.RemoteTypeFullRemote,
+			wantRejected: false,
+		},
+		{
+			name:         "常駐は除外する",
+			remoteType:   model.RemoteTypeOnsite,
+			wantRejected: true,
+		},
+		{
+			name:         "週1出社のハイブリッドも除外する",
+			remoteType:   model.RemoteTypeHybrid,
+			onsiteDays:   ptr(1),
+			wantRejected: true,
+		},
+		{
+			name:         "出社日数が読み取れないハイブリッドも除外する",
+			remoteType:   model.RemoteTypeHybrid,
+			wantRejected: true,
+		},
+		{
+			name:         "リモート条件が読み取れない案件は除外しない（取りこぼしを避ける）",
+			remoteType:   model.RemoteTypeUnknown,
+			wantRejected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			p := profile()
+			if !p.RemoteRequired {
+				t.Fatal("前提が崩れている: profile() は RemoteRequired = true であるべき")
+			}
+
+			job := perfectJob()
+			job.RemoteType = tt.remoteType
+			job.OnsiteDays = tt.onsiteDays
+
+			got := matching.Evaluate(job, p)
+
+			if got.Rejected != tt.wantRejected {
+				t.Errorf("Rejected = %v, want %v (score=%d, reasons=%v)",
+					got.Rejected, tt.wantRejected, got.Score, got.RejectionReasons)
+			}
+		})
 	}
 }
 
