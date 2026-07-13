@@ -81,10 +81,11 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 		deduped := deduplication.Dedupe(jobs)
 
 		var newCount, dupCount int
+		var saveErr error
 		for i := range deduped.Jobs {
 			created, err := c.repo.SaveJob(ctx, &deduped.Jobs[i])
 			if err != nil {
-				summary.FailedSources = append(summary.FailedSources, conn.Name())
+				saveErr = err
 				c.logger.ErrorContext(ctx, "案件の保存に失敗しました",
 					slog.String("source", conn.Name()),
 					slog.String("error", err.Error()))
@@ -97,11 +98,13 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 			}
 		}
 
+		// 保存に失敗しても、そこまでに保存できた件数はサマリへ残す
+		// （実際に保存された件数と食い違わせないため）。
 		summary.FetchedCount += len(raws)
 		summary.NewCount += newCount
 		summary.DuplicateCount += dupCount + deduped.DuplicateCount
 
-		c.saveRun(ctx, &model.CollectionRun{
+		run := &model.CollectionRun{
 			SourceName:     conn.Name(),
 			StartedAt:      started,
 			FinishedAt:     c.now(),
@@ -109,7 +112,17 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 			FetchedCount:   len(raws),
 			NewCount:       newCount,
 			DuplicateCount: dupCount + deduped.DuplicateCount,
-		})
+		}
+		if saveErr != nil {
+			summary.FailedSources = append(summary.FailedSources, conn.Name())
+			run.Status = model.RunStatusFailed
+			run.ErrorMessage = saveErr.Error()
+		}
+		c.saveRun(ctx, run)
+
+		if saveErr != nil {
+			continue
+		}
 
 		c.logger.InfoContext(ctx, "ソースの収集が完了しました",
 			slog.String("source", conn.Name()),

@@ -11,6 +11,9 @@ import (
 // errConnectorFailed はフェイクコネクタが返す失敗。
 var errConnectorFailed = errors.New("fake connector failed")
 
+// errSaveJobFailed はフェイクリポジトリが返す保存失敗。
+var errSaveJobFailed = errors.New("fake repository failed to save job")
+
 // fakeConnector は固定の RawJob を返すコネクタ。err を設定すると必ず失敗する。
 type fakeConnector struct {
 	name      string
@@ -37,8 +40,11 @@ type fakeRepository struct {
 	runs   []model.CollectionRun
 	nextID int64
 
-	saveJobErr error
-	saveRunErr error
+	// saveJobErr は SaveJob が返す失敗。saveJobErrSource が空なら全ソースで、
+	// 設定されていればその紹介元を持つ案件の保存だけが失敗する。
+	saveJobErr       error
+	saveJobErrSource string
+	saveRunErr       error
 }
 
 func newFakeRepository() *fakeRepository {
@@ -49,7 +55,7 @@ func (r *fakeRepository) SaveJob(_ context.Context, job *model.JobPosting) (bool
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.saveJobErr != nil {
+	if r.saveJobErr != nil && r.failsSave(job) {
 		return false, r.saveJobErr
 	}
 	for i := range r.jobs {
@@ -63,6 +69,19 @@ func (r *fakeRepository) SaveJob(_ context.Context, job *model.JobPosting) (bool
 	r.nextID++
 	r.jobs = append(r.jobs, *job)
 	return true, nil
+}
+
+// failsSave は saveJobErr をこの案件へ適用するかを返す。
+func (r *fakeRepository) failsSave(job *model.JobPosting) bool {
+	if r.saveJobErrSource == "" {
+		return true
+	}
+	for _, s := range job.Sources {
+		if s.SourceName == r.saveJobErrSource {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *fakeRepository) ListJobs(context.Context) ([]model.JobPosting, error) {

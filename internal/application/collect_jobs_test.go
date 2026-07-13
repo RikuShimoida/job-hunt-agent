@@ -151,6 +151,144 @@ func TestCollectContinuesWhenOneConnectorFails(t *testing.T) {
 	}
 }
 
+// TestCollectRecordsRunStatusOnSaveResult は、保存の成否が実行履歴へ
+// 正しく反映されることを確かめる。
+//
+// 保存に失敗したのに status=success で履歴を書くと、サマリ（失敗）と
+// 履歴（成功）が矛盾し、後から原因を追えなくなる。
+func TestCollectRecordsRunStatusOnSaveResult(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		saveJobErr       error
+		wantStatus       model.RunStatus
+		wantErrorMessage bool
+		wantNewCount     int
+		wantFailedSource bool
+	}{
+		{
+			name:             "保存が成功したソースは success で記録される",
+			saveJobErr:       nil,
+			wantStatus:       model.RunStatusSuccess,
+			wantErrorMessage: false,
+			wantNewCount:     1,
+			wantFailedSource: false,
+		},
+		{
+			name:             "保存に失敗したソースは failed と error_message で記録される",
+			saveJobErr:       errSaveJobFailed,
+			wantStatus:       model.RunStatusFailed,
+			wantErrorMessage: true,
+			wantNewCount:     0,
+			wantFailedSource: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			repo := newFakeRepository()
+			repo.saveJobErr = tt.saveJobErr
+
+			conn := &fakeConnector{
+				name: "fixture-email",
+				raws: []model.RawJob{emailRaw("fixture-email", "1", "https://example.test/jobs/1")},
+			}
+
+			c := application.NewCollector(repo, []port.Connector{conn}, discardLogger(), fixedNow)
+
+			summary, err := c.Collect(ctx, searchingProfile())
+			if err != nil {
+				t.Fatalf("Collect() returned error: %v（保存失敗で全体を落としてはならない）", err)
+			}
+
+			runs := repo.runsFor("fixture-email")
+			if len(runs) != 1 {
+				t.Fatalf("実行履歴 = %d件, want 1件", len(runs))
+			}
+			if runs[0].Status != tt.wantStatus {
+				t.Errorf("Status = %q, want %q", runs[0].Status, tt.wantStatus)
+			}
+
+			hasMessage := runs[0].ErrorMessage != ""
+			if hasMessage != tt.wantErrorMessage {
+				t.Errorf("ErrorMessage = %q, want message: %v",
+					runs[0].ErrorMessage, tt.wantErrorMessage)
+			}
+			if tt.wantErrorMessage &&
+				!strings.Contains(runs[0].ErrorMessage, errSaveJobFailed.Error()) {
+				t.Errorf("ErrorMessage = %q, want to contain %q",
+					runs[0].ErrorMessage, errSaveJobFailed.Error())
+			}
+
+			if summary.NewCount != tt.wantNewCount {
+				t.Errorf("NewCount = %d, want %d", summary.NewCount, tt.wantNewCount)
+			}
+
+			gotFailedSource := len(summary.FailedSources) > 0
+			if gotFailedSource != tt.wantFailedSource {
+				t.Errorf("FailedSources = %v, want failure: %v",
+					summary.FailedSources, tt.wantFailedSource)
+			}
+		})
+	}
+}
+
+// TestCollectContinuesWhenSaveFailsForOneSource は、保存失敗が
+// 他ソースの収集を巻き込まないことを確かめる。
+func TestCollectContinuesWhenSaveFailsForOneSource(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := newFakeRepository()
+	repo.saveJobErr = errSaveJobFailed
+	repo.saveJobErrSource = "broken"
+
+	broken := &fakeConnector{
+		name: "broken",
+		raws: []model.RawJob{emailRaw("broken", "1", "https://example.test/jobs/broken")},
+	}
+	healthy := &fakeConnector{
+		name: "fixture-email",
+		raws: []model.RawJob{emailRaw("fixture-email", "2", "https://example.test/jobs/2")},
+	}
+
+	c := application.NewCollector(repo,
+		[]port.Connector{broken, healthy}, discardLogger(), fixedNow)
+
+	summary, err := c.Collect(ctx, searchingProfile())
+	if err != nil {
+		t.Fatalf("Collect() returned error: %v（部分失敗で全体を落としてはならない）", err)
+	}
+
+	if healthy.callCount != 1 {
+		t.Errorf("正常なソースの呼び出し回数 = %d, want 1（保存失敗で後続が止まっている）",
+			healthy.callCount)
+	}
+	if repo.jobCount() != 1 {
+		t.Errorf("保存件数 = %d, want 1（正常なソースの案件は保存されるべき）", repo.jobCount())
+	}
+	if len(summary.FailedSources) != 1 || summary.FailedSources[0] != "broken" {
+		t.Errorf("FailedSources = %v, want [broken]", summary.FailedSources)
+	}
+
+	brokenRuns := repo.runsFor("broken")
+	if len(brokenRuns) != 1 || brokenRuns[0].Status != model.RunStatusFailed {
+		t.Fatalf("失敗ソースの実行履歴 = %+v, want status=failed が1件", brokenRuns)
+	}
+
+	healthyRuns := repo.runsFor("fixture-email")
+	if len(healthyRuns) != 1 || healthyRuns[0].Status != model.RunStatusSuccess {
+		t.Fatalf("正常ソースの実行履歴 = %+v, want status=success が1件", healthyRuns)
+	}
+	if healthyRuns[0].NewCount != 1 {
+		t.Errorf("正常ソースの NewCount = %d, want 1", healthyRuns[0].NewCount)
+	}
+}
+
 func TestCollectSkipsWhenPaused(t *testing.T) {
 	t.Parallel()
 
