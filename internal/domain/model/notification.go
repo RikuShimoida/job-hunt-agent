@@ -20,7 +20,11 @@ type Notification struct {
 	Channel     string
 	SentAt      time.Time
 	PayloadHash string
-	Result      NotificationResult
+	// MaterialFields は通知時点の重要変更項目のスナップショット（表示用）。
+	// PayloadHash と別に持つのは、ハッシュからは「何がどう変わったか」を復元できず、
+	// 旧値が notify の時点で job_postings から消えているため。
+	MaterialFields []string
+	Result         NotificationResult
 	// ErrorMessage には Webhook URL を含めない（ログ・DB への秘密情報の漏洩を防ぐため）。
 	ErrorMessage string
 }

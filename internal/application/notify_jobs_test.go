@@ -3,6 +3,7 @@ package application_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -291,6 +292,13 @@ func TestNotifyResendsOnMaterialChange(t *testing.T) {
 	}
 	if !items[0].Update {
 		t.Error("Update = false, want true（既通知の案件は「更新」として送られるべき）")
+	}
+
+	// 前回通知時点のスナップショットが渡らないと、本文に「何が変わったか」を出せない。
+	// 案件本体は既に新しい単価へ上書きされており、旧値はここからしか復元できない。
+	want := "単価=750000〜850000円"
+	if !slices.Contains(items[0].PrevFields, want) {
+		t.Errorf("PrevFields = %v, want %q を含む（旧値が復元できない）", items[0].PrevFields, want)
 	}
 }
 

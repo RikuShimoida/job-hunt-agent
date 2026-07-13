@@ -245,6 +245,14 @@ func TestRemote(t *testing.T) {
 			wantOnsite: ptr(2),
 		},
 		{
+			// 出社0日は「フルリモート」と同じ状態へ寄せる。OnsiteDays に 0 を残すと
+			// 同じ意味が2通りで表現でき、表記の揺れだけで本文が同一の「更新」通知が飛ぶ。
+			name:       "週0日出社はフルリモートと同じ状態へ寄せる",
+			input:      "週0日出社",
+			wantType:   model.RemoteTypeFullRemote,
+			wantOnsite: nil,
+		},
+		{
 			name:       "基本リモートは hybrid（出社日数は読み取れないので nil）",
 			input:      "六本木駅 ※基本リモート（必要に応じて出社あり）",
 			wantType:   model.RemoteTypeHybrid,
