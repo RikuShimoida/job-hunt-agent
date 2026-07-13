@@ -13,8 +13,12 @@ import (
 )
 
 var (
-	// 「80万円」「80〜100万円」「月額 75万」など
-	manYenRe = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*(?:〜|～|~|-|ー)?\s*(\d+(?:\.\d+)?)?\s*万`)
+	// 「75〜85万円」「65万〜90万円」。単一の正規表現で両方を賄わないのは、
+	// 区切りの前の「万」を任意にすると「65万〜90万円」で最初の 65万 だけが
+	// 拾われ、上限が捨てられるため。範囲を先に試し、単一表記へフォールバックする。
+	manYenRangeRe = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*万?\s*(?:〜|～|~|-|ー)\s*(\d+(?:\.\d+)?)\s*万`)
+	// 「80万円」「月額 75万」「100万以上」など
+	manYenRe = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*万`)
 	// 「750,000円」「5000円/時」など
 	yenRe = regexp.MustCompile(`([\d,]+)\s*円`)
 	// 「週3日」「週3〜4日」「週3-4」
@@ -90,17 +94,7 @@ func Rate(s string) (model.RateType, *int, *int) {
 		strings.Contains(s, "/時") || strings.Contains(s, "／時") ||
 		strings.Contains(s, "円/h") || strings.Contains(s, "時間単価")
 
-	if m := manYenRe.FindStringSubmatch(s); m != nil {
-		minV, ok := parseManYen(m[1])
-		if !ok {
-			return model.RateTypeUnknown, nil, nil
-		}
-		maxV := minV
-		if m[2] != "" {
-			if v, ok := parseManYen(m[2]); ok {
-				maxV = v
-			}
-		}
+	if minV, maxV, ok := manYen(s); ok {
 		if hourly {
 			return model.RateTypeHourly, &minV, &maxV
 		}
@@ -127,6 +121,25 @@ func Rate(s string) (model.RateType, *int, *int) {
 	}
 
 	return model.RateTypeUnknown, nil, nil
+}
+
+// manYen は「万」表記の単価を範囲として返す。範囲表記を先に試すのは、
+// 単一表記の正規表現は「65万〜90万円」の先頭 65万 にも一致してしまい、
+// 先に評価すると上限を取りこぼすため。
+func manYen(s string) (minV, maxV int, ok bool) {
+	if m := manYenRangeRe.FindStringSubmatch(s); m != nil {
+		lo, loOK := parseManYen(m[1])
+		hi, hiOK := parseManYen(m[2])
+		if loOK && hiOK {
+			return lo, hi, true
+		}
+	}
+	if m := manYenRe.FindStringSubmatch(s); m != nil {
+		if v, valid := parseManYen(m[1]); valid {
+			return v, v, true
+		}
+	}
+	return 0, 0, false
 }
 
 func parseManYen(s string) (int, bool) {
