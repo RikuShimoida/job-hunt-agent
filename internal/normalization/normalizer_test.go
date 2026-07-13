@@ -102,6 +102,20 @@ func TestRate(t *testing.T) {
 			wantMax:  ptr(5000),
 		},
 		{
+			name:     "通貨記号と円が混在する範囲表記でも下限を取りこぼさない",
+			input:    "￥600,000～1,000,000円",
+			wantType: model.RateTypeMonthly,
+			wantMin:  ptr(600000),
+			wantMax:  ptr(1000000),
+		},
+		{
+			name:     "但し書きの少額を上限として拾わない",
+			input:    "月額 ￥850,000（交通費別途 500円）",
+			wantType: model.RateTypeMonthly,
+			wantMin:  ptr(850000),
+			wantMax:  ptr(850000),
+		},
+		{
 			name:     "時給表記は RateTypeHourly になる",
 			input:    "5,000円/時",
 			wantType: model.RateTypeHourly,
@@ -161,6 +175,9 @@ func TestWorkDays(t *testing.T) {
 		{name: "週を伴わない5日表記", input: "5日 / フルリモート", wantMin: ptr(5), wantMax: ptr(5)},
 		{name: "週を伴わない範囲表記", input: "3〜4日", wantMin: ptr(3), wantMax: ptr(4)},
 		{name: "月間日数を週の稼働日数として読まない", input: "月20日稼働", wantMin: nil, wantMax: nil},
+		{name: "日次の労働時間を週の稼働日数として読まない", input: "1日8時間", wantMin: nil, wantMax: nil},
+		{name: "月間時間と日次時間が並んでも読まない", input: "月160時間（1日8時間×20日）", wantMin: nil, wantMax: nil},
+		{name: "月間日数の後ろに続く週の稼働日数を拾う", input: "月20日稼働（週3日）", wantMin: ptr(3), wantMax: ptr(3)},
 		{name: "空文字は nil", input: "", wantMin: nil, wantMax: nil},
 		{name: "稼働日数が書かれていない場合は nil", input: "応相談", wantMin: nil, wantMax: nil},
 	}
@@ -348,6 +365,17 @@ func TestExtractSkills(t *testing.T) {
 			name:  "辞書に無い語は抽出しない",
 			input: "開発標準「TERASOLUNA」の経験",
 			want:  nil,
+		},
+		{
+			name:  "英文の next から Next.js を誤抽出しない",
+			input: "next step としてご返信ください",
+			want:  nil,
+		},
+		{
+			// Next.js は JavaScript フレームワークであり、JavaScript を併せて拾うのは誤りではない。
+			name:  "Next.js からは JavaScript も併せて抽出する",
+			input: "Next.js でのフロントエンド開発",
+			want:  []string{"Next.js", "JavaScript", "フロントエンド"},
 		},
 		{
 			name:  "空文字は nil",

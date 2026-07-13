@@ -417,6 +417,9 @@ func TestEvaluateRemoteRequiredRejectsOnsiteAndHybrid(t *testing.T) {
 // 以前は normalization.Remote がこの表記をどのパターンにも当てられず unknown に
 // 落としており、reject は unknown を除外しないため、フルリモート必須の利用者へ
 // 出社を伴う案件がそのまま通知されていた。
+//
+// matching のテストが normalization に依存するのは意図的。バグは各パッケージ単体では
+// なく「正規化の分類」と「採点の除外」の継ぎ目に出るため、そこを固定する。
 func TestEvaluateRejectsBasicRemoteFromRealEmail(t *testing.T) {
 	t.Parallel()
 

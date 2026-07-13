@@ -5,8 +5,9 @@
 package normalization
 
 import (
+	"cmp"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -21,14 +22,18 @@ var (
 	manYenRangeRe = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*万?\s*(?:〜|～|~|-|ー)\s*(\d+(?:\.\d+)?)\s*万`)
 	// 「80万円」「月額 75万」「100万以上」など
 	manYenRe = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*万`)
-	// 「750,000円」「5000円/時」など
-	yenRe = regexp.MustCompile(`([\d,]+)\s*円`)
-	// 「￥850,000」「¥600,000」。「円」を伴わない通貨記号だけの表記。
-	yenSignRe = regexp.MustCompile(`[¥￥]\s*([\d,]+)`)
+	// 「￥600,000〜￥1,000,000」「600,000〜1,000,000円」。円・通貨記号のどちらの表記でも
+	// 範囲として拾う。少なくとも片側に円か通貨記号を要求するのは、これが無いと
+	// 「3〜4日」のような数値範囲まで単価として拾ってしまうため。
+	yenRangeRe = regexp.MustCompile(`(?:[¥￥]\s*([\d,]+)|([\d,]+)\s*円)\s*(?:〜|～|~|-|ー)\s*(?:[¥￥]\s*([\d,]+)|([\d,]+)\s*円?)`)
+	// 「750,000円」「5000円/時」「￥850,000」
+	yenSingleRe = regexp.MustCompile(`(?:[¥￥]\s*([\d,]+)|([\d,]+)\s*円)`)
 	// 「週3日」「週3〜4日」「週3-4」
 	workDaysRe = regexp.MustCompile(`週\s*(\d)\s*(?:〜|～|~|-|ー)?\s*(\d)?\s*日?`)
 	// 「5日」「3〜4日」。「週」を伴わない稼働表記。
-	bareWorkDaysRe = regexp.MustCompile(`(\d)\s*(?:〜|～|~|-|ー)?\s*(\d)?\s*日`)
+	// 「日」の直後に数字を許さないのは、「1日8時間」のような日次の労働時間を
+	// 週の稼働日数として読まないため。
+	bareWorkDaysRe = regexp.MustCompile(`(\d)\s*(?:〜|～|~|-|ー)?\s*(\d)?\s*日(?:[^0-9]|$)`)
 	// 「140〜180時間」
 	hoursRe = regexp.MustCompile(`(\d{2,3})\s*(?:〜|～|~|-|ー)\s*(\d{2,3})\s*時間`)
 	// 「週1出社」「月2回出社」
@@ -37,22 +42,23 @@ var (
 
 // skillAliases は表記ゆれを正規名へ寄せる。キーは小文字化して比較する。
 var skillAliases = map[string]string{
-	"js":            "JavaScript",
-	"javascript":    "JavaScript",
-	"ts":            "TypeScript",
-	"typescript":    "TypeScript",
-	"aws cdk":       "CDK",
-	"cdk":           "CDK",
-	"golang":        "Go",
-	"go":            "Go",
-	"java":          "Java",
-	"spring":        "Spring",
-	"spring boot":   "Spring",
-	"springboot":    "Spring",
-	"react":         "React",
-	"react.js":      "React",
-	"reactjs":       "React",
-	"next":          "Next.js",
+	"js":          "JavaScript",
+	"javascript":  "JavaScript",
+	"ts":          "TypeScript",
+	"typescript":  "TypeScript",
+	"aws cdk":     "CDK",
+	"cdk":         "CDK",
+	"golang":      "Go",
+	"go":          "Go",
+	"java":        "Java",
+	"spring":      "Spring",
+	"spring boot": "Spring",
+	"springboot":  "Spring",
+	"react":       "React",
+	"react.js":    "React",
+	"reactjs":     "React",
+	// 素の "next" は辞書に持たない。ExtractSkills が単語境界で照合するため、
+	// 「next step としてご返信ください」のような英文から Next.js を誤抽出する。
 	"next.js":       "Next.js",
 	"nextjs":        "Next.js",
 	"aws":           "AWS",
@@ -118,32 +124,47 @@ func rateOf(hourly bool, minV, maxV int) (model.RateType, *int, *int) {
 	return model.RateTypeMonthly, &minV, &maxV
 }
 
-// plainYen は円表記の単価を範囲として返す。
+// plainYen は円・通貨記号の単価を範囲として返す。
 //
 // 「円」を必須にしないのは、実エージェントのメールに「～￥850,000/月程度」のような
 // 通貨記号だけの表記があるため。「円」を要求すると単価が RateTypeUnknown になり、
 // minimum_rate による除外も target_rate による加点も一切効かなくなる。
+//
+// 範囲表記を先に照合するのは manYen と同じ理由（単一表記を先に見ると上限を捨てる）。
+// 全マッチを集めて先頭と末尾を min/max に採らないのは、「月額 ￥850,000（交通費別途
+// 500円）」のような但し書きで min=850,000 / max=500 と逆転するため。
 func plainYen(s string) (minV, maxV int, ok bool) {
-	ms := yenRe.FindAllStringSubmatch(s, -1)
-	if len(ms) == 0 {
-		ms = yenSignRe.FindAllStringSubmatch(s, -1)
-	}
-	if len(ms) == 0 {
-		return 0, 0, false
-	}
-
-	values := make([]int, 0, len(ms))
-	for _, m := range ms {
-		v, err := strconv.Atoi(strings.ReplaceAll(m[1], ",", ""))
-		if err != nil {
-			continue
+	if m := yenRangeRe.FindStringSubmatch(s); m != nil {
+		lo, loOK := parseYen(firstNonEmpty(m[1], m[2]))
+		hi, hiOK := parseYen(firstNonEmpty(m[3], m[4]))
+		if loOK && hiOK {
+			return lo, hi, true
 		}
-		values = append(values, v)
 	}
-	if len(values) == 0 {
-		return 0, 0, false
+	if m := yenSingleRe.FindStringSubmatch(s); m != nil {
+		if v, valid := parseYen(firstNonEmpty(m[1], m[2])); valid {
+			return v, v, true
+		}
 	}
-	return values[0], values[len(values)-1], true
+	return 0, 0, false
+}
+
+func parseYen(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	v, err := strconv.Atoi(strings.ReplaceAll(s, ",", ""))
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // manYen は「万」表記の単価を範囲として返す。範囲表記を先に試すのは、
@@ -175,8 +196,8 @@ func parseManYen(s string) (int, bool) {
 
 // WorkDays は「週3日」「週3〜4日」「5日」を稼働日数の範囲へ正規化する。
 func WorkDays(s string) (*int, *int) {
-	// 「週」ありを先に試すのは、「平日週5日」のような表記に対して
-	// 「週」なしのパターンを先に当てると意図しない桁を拾いうるため。
+	// 「週」ありを先に試すのは、「週3日（月20日稼働）」のように両方の表記が
+	// 混在したとき、稼働日数として意図された「週」つきの値を優先するため。
 	if minV, maxV, ok := matchWorkDays(workDaysRe, s); ok {
 		return &minV, &maxV
 	}
@@ -188,29 +209,32 @@ func WorkDays(s string) (*int, *int) {
 	return nil, nil
 }
 
+// matchWorkDays は範囲チェックを通った最初の組を返す。
+//
+// 最初のマッチだけを見て諦めないのは、「月20日稼働（3日）」のように
+// 先頭のマッチが月間日数で、後ろに本来の稼働日数が続く場合があるため。
 func matchWorkDays(re *regexp.Regexp, s string) (minV, maxV int, ok bool) {
-	m := re.FindStringSubmatch(s)
-	if m == nil {
-		return 0, 0, false
-	}
-	minV, err := strconv.Atoi(m[1])
-	if err != nil {
-		return 0, 0, false
-	}
-	maxV = minV
-	if m[2] != "" {
-		v, err := strconv.Atoi(m[2])
+	for _, m := range re.FindAllStringSubmatch(s, -1) {
+		lo, err := strconv.Atoi(m[1])
 		if err != nil {
-			return 0, 0, false
+			continue
 		}
-		maxV = v
+		hi := lo
+		if m[2] != "" {
+			v, err := strconv.Atoi(m[2])
+			if err != nil {
+				continue
+			}
+			hi = v
+		}
+		// 「月20日稼働」のような月間日数を週の稼働日数として読まないための範囲チェック。
+		// 1桁ずつ拾う正規表現のため、"20日" は lo=2 / hi=0 という不整合な組で返る。
+		if lo < 1 || hi < lo || hi > 7 {
+			continue
+		}
+		return lo, hi, true
 	}
-	// 「月20日稼働」のような月間日数を週の稼働日数として読まないための範囲チェック。
-	// 1桁ずつ拾う正規表現のため、"20日" は min=2 / max=0 という不整合な組で返る。
-	if minV < 1 || maxV < minV || maxV > 7 {
-		return 0, 0, false
-	}
-	return minV, maxV, true
+	return 0, 0, false
 }
 
 // MonthlyHours は「140〜180時間」を月間稼働時間の範囲へ正規化する。
@@ -375,13 +399,14 @@ func ExtractSkills(text string) []string {
 		out = append(out, canonical)
 	}
 	// map の反復順は不定であり、そのまま返すと呼び出しごとに順序が変わる。
-	// required_skills は MaterialChanges の比較対象であり、順序が揺れると
-	// 内容が変わっていない案件が「重要変更あり」と誤判定されて再通知される。
-	sort.Slice(out, func(i, j int) bool {
-		if firstAt[out[i]] != firstAt[out[j]] {
-			return firstAt[out[i]] < firstAt[out[j]]
+	// 再通知は起きない（model.MaterialChanges / MaterialHash は比較前に並べ替える）が、
+	// required_skills はそのまま DB へ保存され通知本文にも出るため、順序が揺れると
+	// 内容が同じ案件でも収集のたびに UPDATE が走り、本文の表示順も安定しない。
+	slices.SortFunc(out, func(a, b string) int {
+		if firstAt[a] != firstAt[b] {
+			return cmp.Compare(firstAt[a], firstAt[b])
 		}
-		return out[i] < out[j]
+		return cmp.Compare(a, b)
 	})
 	return out
 }
