@@ -113,6 +113,27 @@ func TestMaterialHashIsStable(t *testing.T) {
 	}
 }
 
+// TestMaterialHashGolden は MaterialHash の値そのものを固定する。
+//
+// payload_hash は notifications へ永続化されており、ハッシュの入力（項目・ラベル・値の
+// 文字列表現）を変えると、通知済みの全案件で前回の hash と一致しなくなり、
+// 中身が変わっていないのに一斉に「更新」再通知が飛ぶ。表示都合でこの定義へ手を入れる
+// 誘惑があるため（差分表示は notifier/message.Snapshot 側に別途持たせている）、
+// 意図しない変更をここで落とす。
+//
+// 重要変更の項目を意図して増やす場合は、通知済み案件が一度だけ再通知されることを
+// 承知のうえで golden 値を更新する。
+func TestMaterialHashGolden(t *testing.T) {
+	t.Parallel()
+
+	const golden = "28df734b606ab1e36c88745acf966a384f227fc704da14a724f156d16bbfe2ab"
+
+	if got := model.MaterialHash(baseJob()); got != golden {
+		t.Errorf("MaterialHash() = %s, want %s（ハッシュの定義が変わると通知済み案件が一斉に再通知される）",
+			got, golden)
+	}
+}
+
 func TestMaterialChangesDescribesBeforeAndAfter(t *testing.T) {
 	t.Parallel()
 

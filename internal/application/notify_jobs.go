@@ -47,7 +47,7 @@ func (n *Notifier) Notify(ctx context.Context, p model.Profile) (NotifySummary, 
 		return summary, fmt.Errorf("failed to list jobs: %w", err)
 	}
 
-	notified, err := n.repo.ListNotifiedJobIDs(ctx)
+	notified, err := n.repo.ListNotifiedJobs(ctx)
 	if err != nil {
 		return summary, fmt.Errorf("failed to list notified jobs: %w", err)
 	}
@@ -83,7 +83,7 @@ func (n *Notifier) Notify(ctx context.Context, p model.Profile) (NotifySummary, 
 }
 
 // selectTargets は閾値以上で、未通知または重要変更のあった案件を選ぶ。
-func selectTargets(jobs []model.JobPosting, notified map[int64]string, threshold int) []port.NotifyItem {
+func selectTargets(jobs []model.JobPosting, notified map[int64]port.NotifiedJob, threshold int) []port.NotifyItem {
 	items := make([]port.NotifyItem, 0, len(jobs))
 
 	for _, job := range jobs {
@@ -91,11 +91,15 @@ func selectTargets(jobs []model.JobPosting, notified map[int64]string, threshold
 			continue
 		}
 
-		prevHash, alreadyNotified := notified[job.ID]
-		if alreadyNotified && prevHash == model.MaterialHash(job) {
+		prev, alreadyNotified := notified[job.ID]
+		if alreadyNotified && prev.PayloadHash == model.MaterialHash(job) {
 			continue
 		}
-		items = append(items, port.NotifyItem{Job: job, Update: alreadyNotified})
+		items = append(items, port.NotifyItem{
+			Job:        job,
+			Update:     alreadyNotified,
+			PrevFields: prev.MaterialFields,
+		})
 	}
 
 	sort.SliceStable(items, func(i, j int) bool {

@@ -1,13 +1,25 @@
 package message_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/model"
+	"github.com/RikuShimoida/job-hunt-agent/internal/domain/port"
 	"github.com/RikuShimoida/job-hunt-agent/internal/notifier/message"
 )
+
+// newItem は新着（差分なし）の通知1件。
+func newItem(job model.JobPosting) port.NotifyItem {
+	return port.NotifyItem{Job: job}
+}
+
+// updateItem は prev から job へ重要変更があった再通知1件。
+func updateItem(prev, job model.JobPosting) port.NotifyItem {
+	return port.NotifyItem{Job: job, Update: true, PrevFields: message.Snapshot(prev)}
+}
 
 func fullJob() model.JobPosting {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
@@ -40,7 +52,7 @@ func fullJob() model.JobPosting {
 func TestFormatIncludesAllRequiredFields(t *testing.T) {
 	t.Parallel()
 
-	out := message.Format(fullJob(), false)
+	out := message.Format(newItem(fullJob()))
 
 	required := []string{
 		"92点",
@@ -68,19 +80,19 @@ func TestFormatDistinguishesNewAndUpdate(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		update bool
+		item   port.NotifyItem
 		want   string
 		unwant string
 	}{
 		{
 			name:   "未通知の案件は新着として出す",
-			update: false,
+			item:   newItem(fullJob()),
 			want:   "【92点・新着】",
 			unwant: "【92点・更新】",
 		},
 		{
 			name:   "重要変更のあった既通知案件は更新として出す",
-			update: true,
+			item:   updateItem(fullJob(), fullJob()),
 			want:   "【92点・更新】",
 			unwant: "【92点・新着】",
 		},
@@ -90,7 +102,7 @@ func TestFormatDistinguishesNewAndUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			out := message.Format(fullJob(), tt.update)
+			out := message.Format(tt.item)
 			if !strings.Contains(out, tt.want) {
 				t.Errorf("見出しに %q が含まれていない: %q", tt.want, out)
 			}
@@ -111,7 +123,7 @@ func TestFormatHandlesMissingValues(t *testing.T) {
 		RemoteType: model.RemoteTypeUnknown,
 	}
 
-	out := message.Format(job, false)
+	out := message.Format(newItem(job))
 
 	if !strings.Contains(out, "情報が少ない案件") {
 		t.Errorf("案件名が出ていない: %q", out)
@@ -198,7 +210,7 @@ func TestFormatRate(t *testing.T) {
 				RateMax:  tt.max,
 			}
 
-			out := message.Format(job, false)
+			out := message.Format(newItem(job))
 			if want := "単価：" + tt.want + "　"; !strings.Contains(out, want) {
 				t.Errorf("本文に %q が含まれていない\n--- 本文 ---\n%s", want, out)
 			}
@@ -217,8 +229,8 @@ func TestFormatRateDiffersOnOneSidedChange(t *testing.T) {
 	if model.MaterialHash(before) == model.MaterialHash(after) {
 		t.Fatal("前提が崩れている: 片側だけの単価変更が重要変更として検知されていない")
 	}
-	// 見出し（新着 / 更新）以外に差が出ることを見るため、同じ update で比べる。
-	if message.Format(before, true) == message.Format(after, true) {
+	// 見出し（新着 / 更新）以外に差が出ることを見るため、同じ新着として比べる。
+	if message.Format(newItem(before)) == message.Format(newItem(after)) {
 		t.Error("単価が変わったのに本文が同一（中身の変わらない「更新」通知になる）")
 	}
 }
@@ -235,9 +247,155 @@ func TestFormatHybridShowsOnsiteDays(t *testing.T) {
 		OnsiteDays: &days,
 	}
 
-	if out := message.Format(job, false); !strings.Contains(out, "ハイブリッド（週1日出社）") {
+	if out := message.Format(newItem(job)); !strings.Contains(out, "ハイブリッド（週1日出社）") {
 		t.Errorf("出社日数が出ていない: %q", out)
 	}
+}
+
+// TestFormatShowsMaterialChanges は「更新」通知に変更前後の値が出ることを確かめる
+// （Issue #13 の受入条件）。重要変更の4項目それぞれについて見る。
+func TestFormatShowsMaterialChanges(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*model.JobPosting)
+		want   []string
+		unwant []string
+	}{
+		{
+			name: "単価が上がった",
+			mutate: func(j *model.JobPosting) {
+				j.RateMin, j.RateMax = ptr(900000), ptr(1000000)
+			},
+			want:   []string{"変更：", "・単価：750000〜850000円 → 900000〜1000000円"},
+			unwant: []string{"・リモート：", "・開始時期：", "・必須スキル："},
+		},
+		{
+			name: "フルリモートからハイブリッドへ変わった",
+			mutate: func(j *model.JobPosting) {
+				j.RemoteType, j.OnsiteDays = model.RemoteTypeHybrid, ptr(2)
+			},
+			want:   []string{"・リモート：フルリモート → ハイブリッド（週2日出社）"},
+			unwant: []string{"・単価："},
+		},
+		{
+			name: "開始時期が後ろ倒しになった",
+			mutate: func(j *model.JobPosting) {
+				start := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+				j.StartDate = &start
+			},
+			want:   []string{"・開始時期：2026-09-01 → 2026-10-01"},
+			unwant: []string{"・単価："},
+		},
+		{
+			name: "必須スキルが増えた",
+			mutate: func(j *model.JobPosting) {
+				j.RequiredSkills = []string{"Java", "Spring", "AWS", "Docker", "Kubernetes"}
+			},
+			want:   []string{"・必須スキル：AWS、Docker、Java、Spring → AWS、Docker、Java、Kubernetes、Spring"},
+			unwant: []string{"・単価："},
+		},
+		{
+			name: "単価とリモートが同時に変わった",
+			mutate: func(j *model.JobPosting) {
+				j.RateMin, j.RateMax = ptr(900000), ptr(1000000)
+				j.RemoteType, j.OnsiteDays = model.RemoteTypeOnsite, nil
+			},
+			want: []string{
+				"・単価：750000〜850000円 → 900000〜1000000円",
+				"・リモート：フルリモート → 常駐",
+			},
+			unwant: []string{"・開始時期："},
+		},
+		{
+			name:   "重要変更が無ければ変更ブロックを出さない",
+			mutate: func(*model.JobPosting) {},
+			unwant: []string{"変更：", "・単価："},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prev := fullJob()
+			job := fullJob()
+			tt.mutate(&job)
+
+			out := message.Format(updateItem(prev, job))
+
+			for _, want := range tt.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("本文に %q が含まれていない\n--- 本文 ---\n%s", want, out)
+				}
+			}
+			for _, unwant := range tt.unwant {
+				if strings.Contains(out, unwant) {
+					t.Errorf("本文に %q が含まれてしまっている\n--- 本文 ---\n%s", unwant, out)
+				}
+			}
+		})
+	}
+}
+
+// TestFormatNewJobHasNoChangeBlock は新着通知の本文が変わらないことを確かめる
+// （受入条件「新着通知の本文は変わらない」）。
+func TestFormatNewJobHasNoChangeBlock(t *testing.T) {
+	t.Parallel()
+
+	prev := fullJob()
+	job := fullJob()
+	job.RateMin, job.RateMax = ptr(900000), ptr(1000000)
+
+	// 新着では PrevFields があっても差分を出さない（前回通知が存在しないため）。
+	item := port.NotifyItem{Job: job, Update: false, PrevFields: message.Snapshot(prev)}
+
+	if out := message.Format(item); strings.Contains(out, "変更：") {
+		t.Errorf("新着通知に変更ブロックが出ている\n--- 本文 ---\n%s", out)
+	}
+}
+
+// TestFormatWithoutPrevFieldsFallsBack は、スナップショットを持たない案件
+// （マイグレーション前に通知済み）が見出しだけの「更新」通知になることを確かめる。
+// 旧値を推測で埋めると、変わっていない項目まで変更として表示される。
+func TestFormatWithoutPrevFieldsFallsBack(t *testing.T) {
+	t.Parallel()
+
+	item := port.NotifyItem{Job: fullJob(), Update: true}
+
+	out := message.Format(item)
+	if !strings.Contains(out, "【92点・更新】") {
+		t.Errorf("更新の見出しが出ていない\n--- 本文 ---\n%s", out)
+	}
+	if strings.Contains(out, "変更：") {
+		t.Errorf("旧値が無いのに変更ブロックが出ている\n--- 本文 ---\n%s", out)
+	}
+}
+
+// TestSnapshotLabelsMatchMaterialFields は、差分表示の項目が重要変更の定義
+// （model.MaterialFields）と一致していることを確かめる。
+//
+// model 側に5項目目が増えても Snapshot が追随しなければ、再通知はされるのに
+// その項目の変更が本文へ出ないという食い違いが起きる。
+func TestSnapshotLabelsMatchMaterialFields(t *testing.T) {
+	t.Parallel()
+
+	want := labelsOf(model.MaterialFields(fullJob()))
+	got := labelsOf(message.Snapshot(fullJob()))
+
+	if !slices.Equal(want, got) {
+		t.Errorf("差分表示の項目が重要変更の定義とずれている: model=%v message=%v", want, got)
+	}
+}
+
+func labelsOf(fields []string) []string {
+	labels := make([]string, 0, len(fields))
+	for _, f := range fields {
+		label, _, _ := strings.Cut(f, "=")
+		labels = append(labels, label)
+	}
+	return labels
 }
 
 func TestFormatFailures(t *testing.T) {

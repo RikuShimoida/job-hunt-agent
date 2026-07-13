@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -485,9 +486,9 @@ func TestNotificationsRoundTrip(t *testing.T) {
 		t.Error("SaveNotification() が ID を設定していない")
 	}
 
-	notified, err := repo.ListNotifiedJobIDs(ctx)
+	notified, err := repo.ListNotifiedJobs(ctx)
 	if err != nil {
-		t.Fatalf("ListNotifiedJobIDs() returned error: %v", err)
+		t.Fatalf("ListNotifiedJobs() returned error: %v", err)
 	}
 	if _, ok := notified[job.ID]; ok {
 		t.Error("送信に失敗した案件が通知済みとして返っている")
@@ -505,12 +506,12 @@ func TestNotificationsRoundTrip(t *testing.T) {
 		t.Fatalf("SaveNotification() returned error: %v", err)
 	}
 
-	notified, err = repo.ListNotifiedJobIDs(ctx)
+	notified, err = repo.ListNotifiedJobs(ctx)
 	if err != nil {
-		t.Fatalf("ListNotifiedJobIDs() returned error: %v", err)
+		t.Fatalf("ListNotifiedJobs() returned error: %v", err)
 	}
-	if notified[job.ID] != "hash-1" {
-		t.Errorf("payload_hash = %q, want hash-1", notified[job.ID])
+	if notified[job.ID].PayloadHash != "hash-1" {
+		t.Errorf("payload_hash = %q, want hash-1", notified[job.ID].PayloadHash)
 	}
 
 	// 重要変更で再通知したら、最新の payload_hash が返る。
@@ -525,22 +526,22 @@ func TestNotificationsRoundTrip(t *testing.T) {
 		t.Fatalf("SaveNotification() returned error: %v", err)
 	}
 
-	notified, err = repo.ListNotifiedJobIDs(ctx)
+	notified, err = repo.ListNotifiedJobs(ctx)
 	if err != nil {
-		t.Fatalf("ListNotifiedJobIDs() returned error: %v", err)
+		t.Fatalf("ListNotifiedJobs() returned error: %v", err)
 	}
-	if notified[job.ID] != "hash-2" {
-		t.Errorf("payload_hash = %q, want hash-2（最新の成功を返すべき）", notified[job.ID])
+	if notified[job.ID].PayloadHash != "hash-2" {
+		t.Errorf("payload_hash = %q, want hash-2（最新の成功を返すべき）", notified[job.ID].PayloadHash)
 	}
 }
 
-// TestListNotifiedJobIDsOrdersByID は、sent_at が巻き戻っても最後に保存した
+// TestListNotifiedJobsOrdersByID は、sent_at が巻き戻っても最後に保存した
 // payload_hash が返ることを確かめる。
 //
 // sent_at はアプリ側の時刻をテキストで保存しており、タイムゾーンや時刻同期で
 // 辞書順が保存順と食い違いうる。sent_at で並べると古い hash が最新として残り、
 // 変更済みの案件が「通知済み・変更なし」と誤判定されて再通知されない。
-func TestListNotifiedJobIDsOrdersByID(t *testing.T) {
+func TestListNotifiedJobsOrdersByID(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -563,12 +564,68 @@ func TestListNotifiedJobIDsOrdersByID(t *testing.T) {
 		}
 	}
 
-	notified, err := repo.ListNotifiedJobIDs(ctx)
+	notified, err := repo.ListNotifiedJobs(ctx)
 	if err != nil {
-		t.Fatalf("ListNotifiedJobIDs() returned error: %v", err)
+		t.Fatalf("ListNotifiedJobs() returned error: %v", err)
 	}
-	if notified[job.ID] != "hash-new" {
-		t.Errorf("payload_hash = %q, want hash-new（最後に保存した行を返すべき）", notified[job.ID])
+	if notified[job.ID].PayloadHash != "hash-new" {
+		t.Errorf("payload_hash = %q, want hash-new（最後に保存した行を返すべき）", notified[job.ID].PayloadHash)
+	}
+}
+
+// TestNotifiedJobKeepsMaterialFields は、通知時点のスナップショットが往復すること、
+// および material_fields を持たない旧行が空で返ることを確かめる。
+//
+// 旧行が空で返らないと、マイグレーション前に通知済みの案件で「更新」通知の差分に
+// 出鱈目な旧値が出る。空なら差分を出さず見出しだけへフォールバックする。
+func TestNotifiedJobKeepsMaterialFields(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo, db := newRepo(t)
+
+	job := sampleJob("url:https://example.test/jobs/1")
+	if _, err := repo.SaveJob(ctx, &job); err != nil {
+		t.Fatalf("SaveJob() returned error: %v", err)
+	}
+	legacy := sampleJob("url:https://example.test/jobs/2")
+	if _, err := repo.SaveJob(ctx, &legacy); err != nil {
+		t.Fatalf("SaveJob() returned error: %v", err)
+	}
+
+	fields := []string{"単価=750000〜850000円", "リモート=フルリモート", "開始時期=2026-09-01", "必須スキル=AWS、Java"}
+	n := model.Notification{
+		JobID:          job.ID,
+		Channel:        "slack",
+		SentAt:         time.Date(2026, 7, 13, 9, 0, 0, 0, time.UTC),
+		PayloadHash:    "hash-1",
+		MaterialFields: fields,
+		Result:         model.NotificationResultSuccess,
+	}
+	if err := repo.SaveNotification(ctx, &n); err != nil {
+		t.Fatalf("SaveNotification() returned error: %v", err)
+	}
+
+	// material_fields を指定せず INSERT し、マイグレーション前に保存された行を再現する。
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO notifications (job_id, channel, sent_at, payload_hash, result)
+			VALUES (?, ?, ?, ?, ?)`,
+		legacy.ID, "slack", time.Date(2026, 7, 13, 9, 0, 0, 0, time.UTC), "hash-legacy",
+		string(model.NotificationResultSuccess),
+	); err != nil {
+		t.Fatalf("旧行の INSERT に失敗: %v", err)
+	}
+
+	notified, err := repo.ListNotifiedJobs(ctx)
+	if err != nil {
+		t.Fatalf("ListNotifiedJobs() returned error: %v", err)
+	}
+
+	if got := notified[job.ID].MaterialFields; !slices.Equal(got, fields) {
+		t.Errorf("material_fields = %v, want %v", got, fields)
+	}
+	if got := notified[legacy.ID]; got.PayloadHash != "hash-legacy" || len(got.MaterialFields) != 0 {
+		t.Errorf("旧行 = %+v, want payload_hash=hash-legacy かつ material_fields が空", got)
 	}
 }
 

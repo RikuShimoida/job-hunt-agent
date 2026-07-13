@@ -325,11 +325,12 @@ func (r *Repository) SaveRun(ctx context.Context, run *model.CollectionRun) erro
 // SaveNotification は通知の送信試行を記録する。成功も失敗も1行として残す。
 func (r *Repository) SaveNotification(ctx context.Context, n *model.Notification) error {
 	const q = `INSERT INTO notifications (
-		job_id, channel, sent_at, payload_hash, result, error_message
-	) VALUES (?, ?, ?, ?, ?, ?)`
+		job_id, channel, sent_at, payload_hash, material_fields, result, error_message
+	) VALUES (?, ?, ?, ?, ?, ?, ?)`
 
 	res, err := r.db.ExecContext(ctx, q,
-		n.JobID, n.Channel, n.SentAt, n.PayloadHash, string(n.Result), n.ErrorMessage,
+		n.JobID, n.Channel, n.SentAt, n.PayloadHash, encodeList(n.MaterialFields),
+		string(n.Result), n.ErrorMessage,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert notification for job %d: %w", n.JobID, err)
@@ -342,14 +343,14 @@ func (r *Repository) SaveNotification(ctx context.Context, n *model.Notification
 	return nil
 }
 
-// ListNotifiedJobIDs は送信に成功した通知の job_id → payload_hash を返す。
+// ListNotifiedJobs は送信に成功した通知を job_id ごとに返す。
 //
 // 失敗行（result = failed）を含めないのは、送信できなかった案件を通知済み扱いにすると
 // 次回実行で再送されず、取りこぼすため。
-func (r *Repository) ListNotifiedJobIDs(ctx context.Context) (_ map[int64]string, err error) {
+func (r *Repository) ListNotifiedJobs(ctx context.Context) (_ map[int64]port.NotifiedJob, err error) {
 	// sent_at で並べないのは、アプリ側の時刻をテキストで保存しており
 	// 辞書順が時刻順と一致する保証がないため。id は AUTOINCREMENT で単調増加する。
-	const q = `SELECT job_id, payload_hash FROM notifications
+	const q = `SELECT job_id, payload_hash, material_fields FROM notifications
 		WHERE result = ? ORDER BY id ASC`
 
 	rows, err := r.db.QueryContext(ctx, q, string(model.NotificationResultSuccess))
@@ -358,17 +359,21 @@ func (r *Repository) ListNotifiedJobIDs(ctx context.Context) (_ map[int64]string
 	}
 	defer func() { err = closeRows(rows, err) }()
 
-	// 昇順に読んで上書きするため、同じ案件に複数行あれば最新の payload_hash が残る。
-	notified := make(map[int64]string)
+	// 昇順に読んで上書きするため、同じ案件に複数行あれば最新の1件が残る。
+	notified := make(map[int64]port.NotifiedJob)
 	for rows.Next() {
 		var (
-			jobID int64
-			hash  string
+			jobID  int64
+			hash   string
+			fields string
 		)
-		if err := rows.Scan(&jobID, &hash); err != nil {
+		if err := rows.Scan(&jobID, &hash, &fields); err != nil {
 			return nil, fmt.Errorf("failed to scan notification: %w", err)
 		}
-		notified[jobID] = hash
+		notified[jobID] = port.NotifiedJob{
+			PayloadHash:    hash,
+			MaterialFields: decodeList(fields),
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("failed to iterate notifications: %w", err)

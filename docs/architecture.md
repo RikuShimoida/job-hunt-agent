@@ -50,7 +50,7 @@ CLI（単一バイナリ）。定期実行は GitHub Actions の schedule また
 | 2 | Slack Incoming Webhook 接続と通知済み管理 | **完了** |
 | 3 | Gmail 読み取り専用 OAuth と案件メール解析 | 未着手 |
 | 4 | 公開 Web コネクタ（実装前に公開取得の可否と利用条件を確認する） | 未着手 |
-| 5 | 類似度ベースの重複排除・リトライ・構造変更検知・実行履歴強化・「更新」通知への変更内容表示・`status` サブコマンド | 未着手 |
+| 5 | 類似度ベースの重複排除・リトライ・構造変更検知・実行履歴強化・`status` サブコマンド | 未着手 |
 | 6 | 案件ソースの追加、抽出精度とスコア重みの実データ改善 | 未着手 |
 
 ## 2. 技術構成
@@ -238,14 +238,22 @@ type Repository interface {
     UpdateStatus(ctx context.Context, jobID int64, status model.JobStatus) error
     SaveRun(ctx context.Context, run *model.CollectionRun) error
     SaveNotification(ctx context.Context, n *model.Notification) error
-    // job_id → payload_hash。送信に成功した通知のみ（最新の1件）。
-    ListNotifiedJobIDs(ctx context.Context) (map[int64]string, error)
+    // job_id → 送信に成功した最新の通知1件。
+    ListNotifiedJobs(ctx context.Context) (map[int64]NotifiedJob, error)
+}
+
+// NotifiedJob は前回通知の記録。PayloadHash で再通知の要否を、
+// MaterialFields で「何が変わったか」を判定する。
+type NotifiedJob struct {
+    PayloadHash    string
+    MaterialFields []string  // 前回通知時点のスナップショット（表示用）。旧行は空
 }
 
 // NotifyItem は「新着」と「更新」を区別するために JobPosting を包む。
 type NotifyItem struct {
-    Job    model.JobPosting
-    Update bool
+    Job        model.JobPosting
+    Update     bool
+    PrevFields []string  // 前回通知時点のスナップショット。Update のときだけ意味を持つ
 }
 
 type Notifier interface {
@@ -325,10 +333,12 @@ type ErrorNotifier interface {
 | 2026-07-13 | `score` は `status=notified` を `scored` へ上書きしない | 無条件に `scored` を代入する（現状維持） | `run` は collect → score → notify の順に走るため、上書きすると2回目の `run` で `notified` が消える。再通知の判定は `notifications` テーブルで行うため再通知バグにはならないが、「送信成功した案件は `notified`」という状態が意味を失う。除外条件に触れた場合は `rejected` が優先される |
 | 2026-07-13 | エラー通知を `port.ErrorNotifier` として別 interface に切り、収集の最後に1回だけ送る | 案件通知の `Notifier` に相乗りさせる / 失敗のたびに送る | 宛先（`SLACK_ERROR_WEBHOOK_URL`）が案件通知と別であり、契約も入力（`SourceFailure`）も異なる。失敗のたびに送ると、ソースが軒並み落ちたときに通知が埋まる |
 | 2026-07-13 | **通知履歴の永続化だけ `context.WithoutCancel(ctx)` を使う**（送信の `ctx` はキャンセル可能なまま） | 送信と同じ `ctx` で `SaveNotification` / `UpdateStatus` を呼ぶ（現状維持） | 中断（Ctrl-C / SIGTERM）時、`slack.Notifier` は送信済みの記録を返して抜けるが、キャンセル済み `ctx` では `ExecContext` が必ず失敗し記録が残らない。結果「Slack には届いたのに通知済みにならない」案件が生まれ、次回実行で再送される（本 PR の目的である重複通知の抑止を自ら破る）。**送信は中断できるが、送信済みの記録は必ず残す**を不変条件とする |
-| 2026-07-13 | `ListNotifiedJobIDs` の `ORDER BY` は `id ASC` のみ | `ORDER BY sent_at ASC, id ASC`（現状維持） | `sent_at` はアプリ側の時刻由来でテキストとして格納され、タイムゾーン表記の混在や時刻の巻き戻りで辞書順が保存順と食い違いうる。古い `payload_hash` が最新として残ると、変更済みの案件が「変更なし」と誤判定されて再通知されない。`id` は AUTOINCREMENT で単調増加するため、第1キーを `sent_at` にする実益がない |
+| 2026-07-13 | `ListNotifiedJobs`（旧 `ListNotifiedJobIDs`）の `ORDER BY` は `id ASC` のみ | `ORDER BY sent_at ASC, id ASC`（現状維持） | `sent_at` はアプリ側の時刻由来でテキストとして格納され、タイムゾーン表記の混在や時刻の巻き戻りで辞書順が保存順と食い違いうる。古い `payload_hash` が最新として残ると、変更済みの案件が「変更なし」と誤判定されて再通知されない。`id` は AUTOINCREMENT で単調増加するため、第1キーを `sent_at` にする実益がない |
 | 2026-07-13 | 送信失敗（`NotifySummary.FailedCount > 0`）は `cli.ErrNotifyFailed` で**非ゼロ終了**する | exit 0 のまま標準出力にだけ「送信失敗 N件」と出す（現状維持） | GitHub Actions の schedule で回す前提であり、失敗が赤くならないと誰にも届いていないことに気づけない。案件の保存・採点は完了しているためロールバックはせず、失敗した案件は次回実行で再送される（終了コードは「気づかせる」ためだけに使う） |
 | 2026-07-13 | Slack へは案件1件ごとに1秒（`slack.defaultSendInterval`）空けて送る | 待ちなしで連射する（現状維持） / 429 を検出したら以降を打ち切る / 複数案件を1メッセージへまとめる | Incoming Webhook は概ね 1 msg/sec で、初回収集のように通知が10件以上並ぶと後半が 429 で落ちる。429 は「失敗して次回再送」では解けない（次回も同じ速度で送り同じ位置で失敗する）。打ち切りは通知の遅延を生み、1メッセージへの集約は案件ごとの可読性を失う。ウェイトは `time.After` + `ctx.Done()` の `select` で待ち、中断に即応する。間隔はコンストラクタ（`slack.WithSendInterval`）から差し替えられる |
-| 2026-07-13 | 「更新」通知への**変更内容の表示は Phase 5 へ回す** | Phase 2 で `notifications` へ `MaterialFields` のスナップショットを保存し、差分を本文へ載せる | 旧値は `notify` の時点で DB から消えており、差分を出すにはスキーマ追加（前回スナップショットの保存）が必要になる。Phase 2 の受入条件は「重要変更を見逃さず再通知する」であり、変更内容の表示はその上に載る改善。スキーマ変更を伴う以上、実行履歴を強化する Phase 5 でまとめて扱う |
+| 2026-07-13 | 「更新」通知への**変更内容の表示は Phase 5 へ回す**（→ Issue #13 で前倒し実装。下2行の ADR で置き換え） | Phase 2 で `notifications` へ `MaterialFields` のスナップショットを保存し、差分を本文へ載せる | 旧値は `notify` の時点で DB から消えており、差分を出すにはスキーマ追加（前回スナップショットの保存）が必要になる。Phase 2 の受入条件は「重要変更を見逃さず再通知する」であり、変更内容の表示はその上に載る改善。スキーマ変更を伴う以上、実行履歴を強化する Phase 5 でまとめて扱う |
+| 2026-07-13 | 差分表示は**表示用スナップショット**（`message.Snapshot` → `notifications.material_fields`）を別に保存して行い、`payload_hash` の定義（`model.MaterialHash`）は**一切変えない** | `model.MaterialFields` をそのまま保存して素で表示する / `materialFields` の値表現自体を日本語化して単一定義のまま使う | `model.MaterialFields` はハッシュの入力であり、値が `monthly 750000〜850000` / `full_remote` のような内部表現。そのまま出すと利用者向けの Slack 通知に内部表現が露出する。かといって値を日本語化すると `MaterialHash` の入力が変わり、**通知済みの全案件が次回実行で一斉に「更新」再通知される**（中身は何も変わっていないのに）。再通知の判定（ハッシュ・不変）と差分の表示（スナップショット・表示層）へ責務を割ることで、本文の `単価：` 行と `変更：` 行が同じフォーマッタから出て表記も揃う。代償として項目定義が2箇所に増えるため、ラベル集合の一致を UT（`TestSnapshotLabelsMatchMaterialFields`）で担保する |
+| 2026-07-13 | `MaterialHash` の値を golden 値として UT で固定する（`TestMaterialHashGolden`） | ハッシュの安定性（同じ入力で同じ値）だけをテストする（現状維持） | `payload_hash` は `notifications` へ永続化されており、ハッシュの入力を変えた瞬間に既存の全レコードと一致しなくなって一斉再通知が起きる。「同じ入力で同じ値」のテストは定義変更を検知できない。重要変更の項目を意図して増やすときは、一度だけ再通知されることを承知のうえで golden 値を更新する |
 | 2026-07-13 | `collect` 単体ではエラー通知を Slack へ送らない（`dryRun=true` で組み立てる） | `buildNotifiers` の `DryRun` 分岐を案件通知とエラー通知で分け、`collect` でもエラー通知だけ実送信にする | 定期実行の入口は `run` であり、`collect` 単体は手元での確認用と位置づける。`collect` を実送信として組み立てると、通知を行わないコマンドの副作用として Slack へ投稿が飛び、手元で試すたびにチャンネルが汚れる。`collect` だけを定期実行する運用が現実に出てきた時点で見直す |
 | 2026-07-13 | `payload_hash` の導出（`model.MaterialHash`）は当面 Notifier アダプタ側に置く | `port.NotifyItem` に `PayloadHash` を持たせて `application` が詰める / `Notifier` は送否だけ返し `application` が `model.Notification` を組み立てる | 再通知の判定基準はユースケースの責務であり、層としては `application` 側が素直。ただし現状 Notifier は `slack` / `stdout` の2実装で壊れておらず、動く構造を組み替える価値が今はない。**Notifier が増える Phase 3 で再検討する**（実装が散ると片方だけ古い定義を使う事故が起きうる） |
 
@@ -426,7 +436,7 @@ Incoming Webhook が概ね 1 msg/sec で、超過すると 429 を返すため�
 
 `notifications` は**送信試行ごとに1行 append する監査ログ**（UNIQUE 制約なし。失敗 → 再送の履歴を残す）。
 
-判定は `ListNotifiedJobIDs`（`result = 'success'` の最新行の `job_id → payload_hash`）で行う。
+判定は `ListNotifiedJobs`（`result = 'success'` の最新行の `job_id → NotifiedJob`）で行う。
 
 | 状態 | 挙動 |
 |---|---|
@@ -441,9 +451,30 @@ Incoming Webhook が概ね 1 msg/sec で、超過すると 429 を返すため�
 `notified` にする。失敗した案件は `result=failed` + `error_message` を記録し、`status` は変えない
 （次回実行で再送される）。
 
-「更新」通知には**何が変わったか**を載せない（`【95点・更新】` の見出しのみ）。
-旧値は `notify` の時点で DB に残っておらず、差分を出すには前回スナップショットの保存
-（スキーマ追加）が要るため、**Phase 5 で対応する**。
+### 「更新」通知の差分表示
+
+「更新」通知は見出しの直下へ**何がどう変わったか**を載せる。変わっていない項目は出さない。
+
+```
+【95点・更新】Java／AWS 基盤改善案件
+変更：
+・単価：750000〜850000円 → 900000〜1000000円
+・リモート：フルリモート → ハイブリッド（週2日出社）
+単価：900000〜1000000円　稼働：週3日　開始：2026-09-01
+…
+```
+
+旧値は `notify` の時点で `job_postings` から上書き済みのため、通知の送信時に
+**表示用のスナップショット**（`notifier/message.Snapshot`）を `notifications.material_fields`
+（`\x1f` 区切り）へ保存し、次の「更新」通知でそこから復元する。
+
+**スナップショットは `payload_hash`（`model.MaterialHash`）とは別に持つ。** 再通知の判定は
+ハッシュ、差分の表示はスナップショットと役割を分け、ハッシュの入力（内部表現）を
+表示都合で変えない（§7 の ADR）。項目とラベルが両者でずれないことは
+`message` のテストで担保する（`TestSnapshotLabelsMatchMaterialFields`）。
+
+`material_fields` を持たない行（この機能より前に通知した案件）は空で返り、
+その案件の初回の「更新」通知だけ差分行を出さず、見出しのみへフォールバックする。
 
 ### 秘密情報の扱い
 
