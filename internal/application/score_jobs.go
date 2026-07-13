@@ -46,7 +46,11 @@ func (s *Scorer) Score(ctx context.Context, p model.Profile) (ScoreSummary, erro
 			job.Status = model.JobStatusRejected
 			summary.RejectedCount++
 		} else {
-			job.Status = model.JobStatusScored
+			// 通知済みを scored へ戻さない。再評価のたびに戻すと、
+			// 「送信成功した案件は notified」という状態が次の score で消える。
+			if job.Status != model.JobStatusNotified {
+				job.Status = model.JobStatusScored
+			}
 			summary.ScoredCount++
 		}
 

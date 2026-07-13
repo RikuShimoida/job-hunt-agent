@@ -3,18 +3,18 @@
 複数のエージェント・メール・Web サイトに分散した案件情報を自動で収集し、
 希望条件との一致度を採点して、重複を除いた有望案件だけを通知する CLI ツール（Go）。
 
-> **現状: Phase 0 / Phase 1 完了。**
-> 外部サービス（Gmail / Web スクレイピング / Slack）へは**まだ接続していない**。
-> `testdata` の架空サンプルから収集 → 正規化 → SQLite 保存 → 採点 → dry-run 通知までが動く。
+> **現状: Phase 0 / Phase 1 / Phase 2 完了。**
+> **Slack へは実際に通知が届く。** Gmail / Web スクレイピングへは**まだ接続していない**。
+> `testdata` の架空サンプルから収集 → 正規化 → SQLite 保存 → 採点 → Slack 通知までが動く。
 > 仕様・設計判断は [docs/architecture.md](docs/architecture.md) に集約している。
 
 ## できること
 
 ```
 testdata（メール / HTML）
-      ↓ collect    案件を収集し、正規化して SQLite へ保存（重複は登録しない）
+      ↓ collect    案件を収集し、正規化して SQLite へ保存（重複は登録せず、内容の変更は反映）
       ↓ score      プロフィールと照合し、除外判定と 0〜100 点の採点
-      ↓ notify     閾値以上の案件だけを、加点・減点理由つきで出力
+      ↓ notify     閾値以上かつ未通知の案件を、加点・減点理由つきで Slack へ送信
 ```
 
 出力例:
@@ -53,7 +53,17 @@ make run-dry
 
 - `config/profile.yaml` — 求職状態・単価・稼働・リモート・スキル・役割・除外条件・通知閾値
 - `config/sources.yaml` — 各ソースの有効／無効・種別・パス
-- `.env` — `DATABASE_URL`（既定 `./job-hunt-agent.db`）、`LOG_LEVEL`（既定 `info`）
+- `.env` — 下表の環境変数
+
+| 変数 | 必須 | 用途 |
+|---|---|---|
+| `DATABASE_URL` | 任意（既定 `./job-hunt-agent.db`） | SQLite のファイルパス |
+| `LOG_LEVEL` | 任意（既定 `info`） | `debug` / `info` / `warn` / `error` |
+| `SLACK_WEBHOOK_URL` | **実送信時は必須** | 案件通知の送信先（Incoming Webhook） |
+| `SLACK_ERROR_WEBHOOK_URL` | 任意 | ソース取得失敗の送信先。未設定ならエラーは Slack へ送らず構造化ログにのみ残す |
+
+`--dry-run` なしで `SLACK_WEBHOOK_URL` が未設定なら**起動時に停止する**。
+黙って標準出力へフォールバックすると「送ったつもりで送られていない」事故になるため。
 
 設定のうち、解釈を間違えやすい2つ。
 
@@ -81,10 +91,26 @@ make run-dry
 | `job-hunt-agent profile validate` | プロフィール設定を検証する |
 | `job-hunt-agent collect [--source <name>]` | 案件を収集して保存する |
 | `job-hunt-agent score` | 保存済み案件を再評価する |
-| `job-hunt-agent notify --dry-run` | 閾値以上の案件を標準出力へ表示する |
-| `job-hunt-agent run --dry-run` | collect → score → notify を順に実行する |
+| `job-hunt-agent notify [--dry-run]` | 閾値以上かつ未通知の案件を Slack へ通知する |
+| `job-hunt-agent run [--dry-run]` | collect → score → notify を順に実行する |
 
-Phase 1 では Slack 送信が未実装のため、`notify` / `run` は `--dry-run` が必須。
+`--dry-run` を付けると Slack へ送らず、送信予定の内容を標準出力へ表示する。
+
+### 通知済み管理
+
+同じ案件が何度も届くと通知はノイズになり、やがて見なくなる。そのため:
+
+- 一度送信に成功した案件は**再通知しない**（`run` を何度実行しても届かない）
+- ただし**重要な変更**（単価・リモート頻度・開始時期・必須スキル）があり、
+  再評価後も閾値以上なら `【95点・更新】` として再通知する
+- 加点理由の**文言だけ**が変わっても再通知しない
+- 有望案件が0件なら Slack へ何も送らない（無音）
+- 送信に失敗した案件は通知済みにせず、次回実行で再送する
+
+`--dry-run` は**通知済みとして記録しない**（実際には送っていないため）。
+
+`collect` / `score` は案件通知を行わないため `SLACK_WEBHOOK_URL` を要求しない。
+ソース取得失敗を Slack のエラーチャンネルへ送るのは `run`（`--dry-run` なし）。
 
 ## 標準コマンド
 
@@ -107,15 +133,15 @@ Phase 1 では Slack 送信が未実装のため、`notify` / `run` は `--dry-r
 - **CLI**: Cobra / **設定**: YAML + 環境変数
 - **永続化**: SQLite（`modernc.org/sqlite`。CGO 不要）
 - **HTML 解析**: `golang.org/x/net/html`
+- **通知**: Slack Incoming Webhook（標準 `net/http`。`slack-go/slack` は使わない）
 - **ログ**: 標準 `log/slog`（JSON 構造化ログ）
 - **テスト**: 標準 `testing`（テーブル駆動）。testify は使わない
 - **Lint**: golangci-lint v2 / **CI**: GitHub Actions
 
 ## 現時点の対象外
 
-Phase 2 以降で実装する。
+Phase 3 以降で実装する。
 
-- **Slack への実送信**と通知済み管理（Phase 2）
 - **Gmail** 読み取り専用 OAuth（Phase 3）
 - **公開 Web コネクタ**（Phase 4。実装前に公開取得の可否と利用条件を確認する）
 - 類似度ベースの重複排除・リトライ・構造変更検知・`status` サブコマンド（Phase 5）

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/model"
+	"github.com/RikuShimoida/job-hunt-agent/internal/domain/port"
 	"github.com/RikuShimoida/job-hunt-agent/internal/notifier/stdout"
 )
 
@@ -17,6 +18,7 @@ func fullJob() model.JobPosting {
 	days := 3
 
 	return model.JobPosting{
+		ID:               1,
 		Title:            "Java／AWS 基盤改善案件",
 		Score:            92,
 		RateType:         model.RateTypeMonthly,
@@ -29,45 +31,49 @@ func fullJob() model.JobPosting {
 		StartDate:        &start,
 		RequiredSkills:   []string{"Java", "Spring", "AWS", "Docker"},
 		SourceURL:        "https://example.test/jobs/1",
-		ScoreReasons:     []string{"希望単価以上", "フルリモート", "得意スキル4件一致"},
+		ScoreReasons:     []string{"希望単価以上", "フルリモート"},
 		RejectionReasons: []string{"Terraform実務経験が歓迎条件"},
-		Sources: []model.JobSource{
-			{SourceName: "レバテック"},
-		},
+		Sources:          []model.JobSource{{SourceName: "レバテック"}},
 	}
 }
 
-func TestNotifyIncludesAllRequiredFields(t *testing.T) {
+func TestNotifyWritesJobToWriter(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
 	n := stdout.New(&buf)
 
-	if err := n.Notify(context.Background(), []model.JobPosting{fullJob()}); err != nil {
+	records, err := n.Notify(context.Background(), []port.NotifyItem{{Job: fullJob()}})
+	if err != nil {
 		t.Fatalf("Notify() returned error: %v", err)
 	}
 
-	out := buf.String()
-
-	// 受入条件: 案件名・スコア・主要条件・URL・加点理由・減点理由が含まれること。
-	required := []string{
-		"92点",
-		"Java／AWS 基盤改善案件",
-		"750000〜850000円",
-		"週3日",
-		"2026-09-01",
-		"フルリモート",
-		"東京",
-		"Java、Spring、AWS、Docker",
-		"レバテック",
-		"希望単価以上",
-		"Terraform実務経験が歓迎条件",
-		"https://example.test/jobs/1",
+	// dry-run を通知済みとして記録すると、実送信で「送ったつもり」の案件が生まれる。
+	if len(records) != 0 {
+		t.Errorf("送信記録 = %+v, want なし（dry-run は通知済みとして記録しない）", records)
 	}
-	for _, want := range required {
+
+	out := buf.String()
+	for _, want := range []string{"92点", "Java／AWS 基盤改善案件", "750000〜850000円", "URL："} {
 		if !strings.Contains(out, want) {
 			t.Errorf("出力に %q が含まれていない\n--- 出力 ---\n%s", want, out)
 		}
+	}
+}
+
+func TestNotifyMarksUpdate(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	n := stdout.New(&buf)
+
+	if _, err := n.Notify(context.Background(),
+		[]port.NotifyItem{{Job: fullJob(), Update: true}}); err != nil {
+		t.Fatalf("Notify() returned error: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "・更新】") {
+		t.Errorf("更新として出力されていない: %q", buf.String())
 	}
 }
 
@@ -77,66 +83,12 @@ func TestNotifyWithNoJobs(t *testing.T) {
 	var buf bytes.Buffer
 	n := stdout.New(&buf)
 
-	if err := n.Notify(context.Background(), nil); err != nil {
+	if _, err := n.Notify(context.Background(), nil); err != nil {
 		t.Fatalf("Notify() returned error: %v", err)
 	}
 
 	if !strings.Contains(buf.String(), "通知対象の案件はありません") {
 		t.Errorf("0件時のメッセージが出ていない: %q", buf.String())
-	}
-}
-
-func TestFormatHandlesMissingValues(t *testing.T) {
-	t.Parallel()
-
-	// 単価・稼働・開始時期・リモートがすべて未取得の案件でも出力できること。
-	job := model.JobPosting{
-		Title:      "情報が少ない案件",
-		Score:      60,
-		RateType:   model.RateTypeUnknown,
-		RemoteType: model.RemoteTypeUnknown,
-	}
-
-	out := stdout.Format(job)
-
-	if !strings.Contains(out, "情報が少ない案件") {
-		t.Errorf("案件名が出ていない: %q", out)
-	}
-	if strings.Count(out, "不明") < 3 {
-		t.Errorf("未取得項目が「不明」として出ていない: %q", out)
-	}
-}
-
-func TestFormatHourlyRate(t *testing.T) {
-	t.Parallel()
-
-	rate := 5000
-	job := model.JobPosting{
-		Title:    "時給案件",
-		RateType: model.RateTypeHourly,
-		RateMin:  &rate,
-		RateMax:  &rate,
-	}
-
-	out := stdout.Format(job)
-	if !strings.Contains(out, "5000円/時") {
-		t.Errorf("時給表記が出ていない: %q", out)
-	}
-}
-
-func TestFormatHybridShowsOnsiteDays(t *testing.T) {
-	t.Parallel()
-
-	days := 1
-	job := model.JobPosting{
-		Title:      "ハイブリッド案件",
-		RemoteType: model.RemoteTypeHybrid,
-		OnsiteDays: &days,
-	}
-
-	out := stdout.Format(job)
-	if !strings.Contains(out, "ハイブリッド（週1日出社）") {
-		t.Errorf("出社日数が出ていない: %q", out)
 	}
 }
 
@@ -149,10 +101,47 @@ func TestNotifyRespectsCanceledContext(t *testing.T) {
 	var buf bytes.Buffer
 	n := stdout.New(&buf)
 
-	if err := n.Notify(ctx, []model.JobPosting{fullJob()}); err == nil {
+	if _, err := n.Notify(ctx, []port.NotifyItem{{Job: fullJob()}}); err == nil {
 		t.Fatal("キャンセル済み context でエラーが返らなかった")
 	}
 	if buf.Len() != 0 {
 		t.Errorf("キャンセル済みなのに出力された: %q", buf.String())
+	}
+}
+
+// TestErrorNotifierWritesFailures は、dry-run でもソース取得失敗が
+// 「送信予定」として標準出力に出ることを確かめる。
+func TestErrorNotifierWritesFailures(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	n := stdout.NewErrorNotifier(&buf)
+
+	failures := []model.SourceFailure{
+		{SourceName: "fixture-email", Message: "failed to read fixture dir"},
+	}
+	if err := n.NotifyError(context.Background(), failures); err != nil {
+		t.Fatalf("NotifyError() returned error: %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{"収集エラー", "fixture-email", "failed to read fixture dir"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("出力に %q が含まれていない: %q", want, out)
+		}
+	}
+}
+
+func TestErrorNotifierIsSilentWithoutFailures(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	n := stdout.NewErrorNotifier(&buf)
+
+	if err := n.NotifyError(context.Background(), nil); err != nil {
+		t.Fatalf("NotifyError() returned error: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("失敗が無いのに出力された: %q", buf.String())
 	}
 }

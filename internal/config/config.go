@@ -41,6 +41,10 @@ type Sources struct {
 type Env struct {
 	DatabaseURL string
 	LogLevel    string
+	// SlackWebhookURL は案件通知の送信先。--dry-run なしの実送信で必須。
+	SlackWebhookURL string
+	// SlackErrorWebhookURL はソース取得失敗の送信先。未設定ならエラーは Slack へ送らない。
+	SlackErrorWebhookURL string
 }
 
 // LoadProfile は profile.yaml を読み、検証まで行う。
@@ -190,8 +194,10 @@ func (s Sources) Find(name string) (Source, error) {
 // LoadEnv は環境変数を読む。未設定なら既定値を使う。
 func LoadEnv() Env {
 	e := Env{
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		LogLevel:    os.Getenv("LOG_LEVEL"),
+		DatabaseURL:          os.Getenv("DATABASE_URL"),
+		LogLevel:             os.Getenv("LOG_LEVEL"),
+		SlackWebhookURL:      os.Getenv("SLACK_WEBHOOK_URL"),
+		SlackErrorWebhookURL: os.Getenv("SLACK_ERROR_WEBHOOK_URL"),
 	}
 	if e.DatabaseURL == "" {
 		e.DatabaseURL = defaultDatabaseURL

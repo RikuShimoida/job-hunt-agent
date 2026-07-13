@@ -52,7 +52,9 @@ func (p *Pipeline) Run(ctx context.Context, profile model.Profile) (RunSummary, 
 		slog.Int("fetched", summary.Collect.FetchedCount),
 		slog.Int("new", summary.Collect.NewCount),
 		slog.Int("duplicate", summary.Collect.DuplicateCount),
-		slog.Int("notified", summary.Notify.NotifiedCount),
+		slog.Int("updated", summary.Collect.UpdatedCount),
+		slog.Int("notified", summary.Notify.TargetCount),
+		slog.Int("sent", summary.Notify.SentCount),
 		slog.Any("failed_sources", summary.Collect.FailedSources))
 
 	return summary, nil
