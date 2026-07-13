@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/RikuShimoida/job-hunt-agent/internal/application"
 	"github.com/RikuShimoida/job-hunt-agent/internal/bootstrap"
 	"github.com/RikuShimoida/job-hunt-agent/internal/config"
 )
@@ -19,8 +20,8 @@ const (
 	defaultSourcesPath = "config/sources.yaml"
 )
 
-// ErrDryRunRequired は Phase 1 で --dry-run 以外の通知が使えないことを示す。
-var ErrDryRunRequired = errors.New("slack notification is not implemented yet; use --dry-run")
+// ErrNotifyFailed は通知の一部または全部を送信できなかったことを示す。
+var ErrNotifyFailed = errors.New("notify failed")
 
 type globalFlags struct {
 	profilePath string
@@ -128,7 +129,7 @@ func newCollectCommand(g *globalFlags) *cobra.Command {
 		Use:   "collect",
 		Short: "有効なソースから案件を収集する",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			app, err := newApp(cmd, g, source)
+			app, err := newApp(cmd, g, source, true)
 			if err != nil {
 				return err
 			}
@@ -139,8 +140,9 @@ func newCollectCommand(g *globalFlags) *cobra.Command {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(),
-				"取得 %d件 / 新規 %d件 / 重複 %d件 / 失敗ソース %v\n",
-				summary.FetchedCount, summary.NewCount, summary.DuplicateCount, summary.FailedSources)
+				"取得 %d件 / 新規 %d件 / 重複 %d件 / 更新 %d件 / 失敗ソース %v\n",
+				summary.FetchedCount, summary.NewCount, summary.DuplicateCount,
+				summary.UpdatedCount, summary.FailedSources)
 			return err
 		},
 	}
@@ -153,7 +155,7 @@ func newScoreCommand(g *globalFlags) *cobra.Command {
 		Use:   "score",
 		Short: "保存済み案件を再評価する",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			app, err := newApp(cmd, g, "")
+			app, err := newApp(cmd, g, "", true)
 			if err != nil {
 				return err
 			}
@@ -175,24 +177,22 @@ func newNotifyCommand(g *globalFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "notify",
-		Short: "閾値以上の案件を通知する",
+		Short: "閾値以上かつ未通知の案件を Slack へ通知する",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if !dryRun {
-				return ErrDryRunRequired
-			}
-			app, err := newApp(cmd, g, "")
+			app, err := newApp(cmd, g, "", dryRun)
 			if err != nil {
 				return err
 			}
 			defer app.Close() //nolint:errcheck // 終了時の close 失敗は報告済みのログで足りる
 
-			if _, err := app.Notifier.Notify(cmd.Context(), app.Profile); err != nil {
+			summary, err := app.Notifier.Notify(cmd.Context(), app.Profile)
+			if err != nil {
 				return err
 			}
-			return nil
+			return reportNotify(cmd.OutOrStdout(), summary)
 		},
 	}
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "送信せず標準出力に表示する")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Slack へ送らず標準出力に表示する")
 	return cmd
 }
 
@@ -203,30 +203,47 @@ func newRunCommand(g *globalFlags) *cobra.Command {
 		Use:   "run",
 		Short: "収集・採点・通知を順に実行する",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if !dryRun {
-				return ErrDryRunRequired
-			}
-			app, err := newApp(cmd, g, "")
+			app, err := newApp(cmd, g, "", dryRun)
 			if err != nil {
 				return err
 			}
 			defer app.Close() //nolint:errcheck // 終了時の close 失敗は報告済みのログで足りる
 
-			if _, err := app.Pipeline.Run(cmd.Context(), app.Profile); err != nil {
+			summary, err := app.Pipeline.Run(cmd.Context(), app.Profile)
+			if err != nil {
 				return err
 			}
-			return nil
+			return reportNotify(cmd.OutOrStdout(), summary.Notify)
 		},
 	}
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "送信せず標準出力に表示する")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Slack へ送らず標準出力に表示する")
 	return cmd
 }
 
-func newApp(cmd *cobra.Command, g *globalFlags, source string) (*bootstrap.App, error) {
+// reportNotify は通知結果を出力し、1件でも送信に失敗していれば ErrNotifyFailed を返す。
+//
+// 失敗を終了コードへ出さないと、定期実行（cron / GitHub Actions）が成功扱いで終わり、
+// 誰にも届いていないことに気づけない。案件の保存・採点は済んでいるためロールバックはせず、
+// 失敗した案件は次回実行で再送される。
+func reportNotify(out io.Writer, s application.NotifySummary) error {
+	if _, err := fmt.Fprintf(out, "通知対象 %d件 / 送信成功 %d件 / 送信失敗 %d件\n",
+		s.TargetCount, s.SentCount, s.FailedCount); err != nil {
+		return fmt.Errorf("failed to write output: %w", err)
+	}
+	if s.FailedCount > 0 {
+		return fmt.Errorf("%w: %d件の送信に失敗しました", ErrNotifyFailed, s.FailedCount)
+	}
+	return nil
+}
+
+// newApp を collect / score が dryRun=true で呼ぶのは、この2つが案件通知を行わないため。
+// 実送信として組み立てると、通知しないコマンドまで SLACK_WEBHOOK_URL 必須になる。
+func newApp(cmd *cobra.Command, g *globalFlags, source string, dryRun bool) (*bootstrap.App, error) {
 	return bootstrap.New(cmd.Context(), bootstrap.Options{
 		ProfilePath:  g.profilePath,
 		SourcesPath:  g.sourcesPath,
 		SourceFilter: source,
+		DryRun:       dryRun,
 		Out:          cmd.OutOrStdout(),
 		LogOut:       cmd.ErrOrStderr(),
 	})

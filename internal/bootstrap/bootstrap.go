@@ -16,6 +16,8 @@ import (
 	"github.com/RikuShimoida/job-hunt-agent/internal/connector/fixture"
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/model"
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/port"
+	"github.com/RikuShimoida/job-hunt-agent/internal/notifier/noop"
+	"github.com/RikuShimoida/job-hunt-agent/internal/notifier/slack"
 	"github.com/RikuShimoida/job-hunt-agent/internal/notifier/stdout"
 	"github.com/RikuShimoida/job-hunt-agent/internal/platform/database"
 	"github.com/RikuShimoida/job-hunt-agent/internal/platform/logging"
@@ -28,6 +30,8 @@ type Options struct {
 	SourcesPath string
 	// SourceFilter が空でなければ、そのソースだけを有効にする。
 	SourceFilter string
+	// DryRun が true なら Slack へ送らず、送信予定の内容を Out へ書く。
+	DryRun bool
 	// Out は通知の出力先。
 	Out io.Writer
 	// LogOut はログの出力先。
@@ -82,15 +86,21 @@ func New(ctx context.Context, opts Options) (*App, error) {
 		return nil, err
 	}
 
+	// 通知先の確定を DB より先に置く。Webhook 未設定で停止するなら、
+	// DB ファイルを作る前に止めたい。
+	notifier, errorNotifier, err := buildNotifiers(opts, env)
+	if err != nil {
+		return nil, err
+	}
+
 	db, err := database.Open(ctx, env.DatabaseURL)
 	if err != nil {
 		return nil, err
 	}
 
 	repo := sqlite.New(db)
-	notifier := stdout.New(opts.Out)
 
-	collector := application.NewCollector(repo, connectors, logger, time.Now)
+	collector := application.NewCollector(repo, connectors, errorNotifier, logger, time.Now)
 	scorer := application.NewScorer(repo, logger)
 	notify := application.NewNotifier(repo, notifier, logger)
 
@@ -103,6 +113,27 @@ func New(ctx context.Context, opts Options) (*App, error) {
 		Logger:   logger,
 		db:       db,
 	}, nil
+}
+
+// buildNotifiers は dry-run か実送信かで通知先を切り替える。
+//
+// SLACK_WEBHOOK_URL 未設定時に標準出力へフォールバックしないのは、
+// 「送ったつもりで誰にも届いていない」事故になるため。起動時に停止する。
+func buildNotifiers(opts Options, env config.Env) (port.Notifier, port.ErrorNotifier, error) {
+	if opts.DryRun {
+		return stdout.New(opts.Out), stdout.NewErrorNotifier(opts.Out), nil
+	}
+
+	if env.SlackWebhookURL == "" {
+		return nil, nil, fmt.Errorf("%w: SLACK_WEBHOOK_URL is required without --dry-run",
+			model.ErrMissingWebhookURL)
+	}
+
+	// エラー通知先の未設定は正常系。ソース失敗は構造化ログに残る。
+	if env.SlackErrorWebhookURL == "" {
+		return slack.New(env.SlackWebhookURL), noop.NewErrorNotifier(), nil
+	}
+	return slack.New(env.SlackWebhookURL), slack.NewErrorNotifier(env.SlackErrorWebhookURL), nil
 }
 
 func selectSources(sources config.Sources, filter string) ([]config.Source, error) {

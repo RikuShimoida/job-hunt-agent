@@ -56,7 +56,8 @@ func TestCollectSavesJobs(t *testing.T) {
 		},
 	}
 
-	c := application.NewCollector(repo, []port.Connector{conn}, discardLogger(), fixedNow)
+	c := application.NewCollector(repo, []port.Connector{conn},
+		&fakeErrorNotifier{}, discardLogger(), fixedNow)
 
 	summary, err := c.Collect(ctx, searchingProfile())
 	if err != nil {
@@ -84,7 +85,8 @@ func TestCollectDoesNotDuplicateOnRerun(t *testing.T) {
 		raws: []model.RawJob{emailRaw("fixture-email", "1", "https://example.test/jobs/1")},
 	}
 
-	c := application.NewCollector(repo, []port.Connector{conn}, discardLogger(), fixedNow)
+	c := application.NewCollector(repo, []port.Connector{conn},
+		&fakeErrorNotifier{}, discardLogger(), fixedNow)
 
 	first, err := c.Collect(ctx, searchingProfile())
 	if err != nil {
@@ -122,7 +124,7 @@ func TestCollectContinuesWhenOneConnectorFails(t *testing.T) {
 	}
 
 	c := application.NewCollector(repo,
-		[]port.Connector{failing, healthy}, discardLogger(), fixedNow)
+		[]port.Connector{failing, healthy}, &fakeErrorNotifier{}, discardLogger(), fixedNow)
 
 	summary, err := c.Collect(ctx, searchingProfile())
 	if err != nil {
@@ -198,7 +200,8 @@ func TestCollectRecordsRunStatusOnSaveResult(t *testing.T) {
 				raws: []model.RawJob{emailRaw("fixture-email", "1", "https://example.test/jobs/1")},
 			}
 
-			c := application.NewCollector(repo, []port.Connector{conn}, discardLogger(), fixedNow)
+			c := application.NewCollector(repo, []port.Connector{conn},
+				&fakeErrorNotifier{}, discardLogger(), fixedNow)
 
 			summary, err := c.Collect(ctx, searchingProfile())
 			if err != nil {
@@ -257,7 +260,7 @@ func TestCollectContinuesWhenSaveFailsForOneSource(t *testing.T) {
 	}
 
 	c := application.NewCollector(repo,
-		[]port.Connector{broken, healthy}, discardLogger(), fixedNow)
+		[]port.Connector{broken, healthy}, &fakeErrorNotifier{}, discardLogger(), fixedNow)
 
 	summary, err := c.Collect(ctx, searchingProfile())
 	if err != nil {
@@ -299,7 +302,8 @@ func TestCollectSkipsWhenPaused(t *testing.T) {
 		raws: []model.RawJob{emailRaw("fixture-email", "1", "https://example.test/jobs/1")},
 	}
 
-	c := application.NewCollector(repo, []port.Connector{conn}, discardLogger(), fixedNow)
+	c := application.NewCollector(repo, []port.Connector{conn},
+		&fakeErrorNotifier{}, discardLogger(), fixedNow)
 
 	p := searchingProfile()
 	p.SearchStatus = model.SearchStatusPaused
@@ -335,7 +339,7 @@ func TestCollectLogsSummary(t *testing.T) {
 	}
 
 	c := application.NewCollector(repo,
-		[]port.Connector{failing, healthy}, logger, fixedNow)
+		[]port.Connector{failing, healthy}, &fakeErrorNotifier{}, logger, fixedNow)
 
 	if _, err := c.Collect(ctx, searchingProfile()); err != nil {
 		t.Fatalf("Collect() returned error: %v", err)
@@ -350,6 +354,124 @@ func TestCollectLogsSummary(t *testing.T) {
 	failed, ok := entry["failed_sources"].([]any)
 	if !ok || len(failed) != 1 || failed[0] != "broken" {
 		t.Errorf("failed_sources = %v, want [broken]", entry["failed_sources"])
+	}
+}
+
+// TestCollectNotifiesSourceFailures は、ソース取得の失敗が
+// エラー通知先へ1回だけまとめて送られることを確かめる。
+func TestCollectNotifiesSourceFailures(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := newFakeRepository()
+	errNotifier := &fakeErrorNotifier{}
+
+	brokenA := &fakeConnector{name: "broken-a", err: errConnectorFailed}
+	brokenB := &fakeConnector{name: "broken-b", err: errConnectorFailed}
+	healthy := &fakeConnector{
+		name: "fixture-email",
+		raws: []model.RawJob{emailRaw("fixture-email", "1", "https://example.test/jobs/1")},
+	}
+
+	c := application.NewCollector(repo,
+		[]port.Connector{brokenA, healthy, brokenB}, errNotifier, discardLogger(), fixedNow)
+
+	if _, err := c.Collect(ctx, searchingProfile()); err != nil {
+		t.Fatalf("Collect() returned error: %v", err)
+	}
+
+	// 失敗ごとに送ると通知が埋まるため、収集の最後に1回だけ送る。
+	if got := errNotifier.callCount(); got != 1 {
+		t.Errorf("エラー通知の呼び出し回数 = %d, want 1", got)
+	}
+
+	failures := errNotifier.notified()
+	if len(failures) != 2 {
+		t.Fatalf("通知された失敗 = %d件, want 2件: %+v", len(failures), failures)
+	}
+	for _, f := range failures {
+		if f.SourceName != "broken-a" && f.SourceName != "broken-b" {
+			t.Errorf("想定外のソースが通知された: %q", f.SourceName)
+		}
+		if f.Message == "" {
+			t.Errorf("%s の失敗理由が空（原因を特定できない）", f.SourceName)
+		}
+	}
+}
+
+// TestCollectDoesNotNotifyWhenAllSourcesSucceed は、失敗が無いときに
+// エラー通知が飛ばない（無音である）ことを確かめる。
+func TestCollectDoesNotNotifyWhenAllSourcesSucceed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := newFakeRepository()
+	errNotifier := &fakeErrorNotifier{}
+
+	conn := &fakeConnector{
+		name: "fixture-email",
+		raws: []model.RawJob{emailRaw("fixture-email", "1", "https://example.test/jobs/1")},
+	}
+
+	c := application.NewCollector(repo, []port.Connector{conn},
+		errNotifier, discardLogger(), fixedNow)
+
+	if _, err := c.Collect(ctx, searchingProfile()); err != nil {
+		t.Fatalf("Collect() returned error: %v", err)
+	}
+
+	if got := errNotifier.callCount(); got != 0 {
+		t.Errorf("失敗が無いのにエラー通知が %d回送られた, want 0回", got)
+	}
+}
+
+// TestCollectDetectsMaterialChangeOnRecollect は、再収集で単価が変わったときに
+// 重要変更として検出され、サマリへ計上されることを確かめる。
+func TestCollectDetectsMaterialChangeOnRecollect(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := newFakeRepository()
+
+	const url = "https://example.test/jobs/1"
+	conn := &fakeConnector{
+		name: "fixture-email",
+		raws: []model.RawJob{emailRaw("fixture-email", "1", url)},
+	}
+	c := application.NewCollector(repo, []port.Connector{conn},
+		&fakeErrorNotifier{}, discardLogger(), fixedNow)
+
+	if _, err := c.Collect(ctx, searchingProfile()); err != nil {
+		t.Fatalf("1回目の Collect() でエラー: %v", err)
+	}
+
+	// 同じ URL（= 同じ dedup_key）のまま単価だけが上がった案件が再送される。
+	raised := emailRaw("fixture-email", "1", url)
+	raised.Body = strings.Replace(raised.Body, "想定単価: 75〜85万円", "想定単価: 90〜100万円", 1)
+	conn.raws = []model.RawJob{raised}
+
+	second, err := c.Collect(ctx, searchingProfile())
+	if err != nil {
+		t.Fatalf("2回目の Collect() でエラー: %v", err)
+	}
+
+	if second.NewCount != 0 {
+		t.Errorf("2回目の NewCount = %d, want 0（重複登録されている）", second.NewCount)
+	}
+	if second.UpdatedCount != 1 {
+		t.Fatalf("UpdatedCount = %d, want 1（単価変更が重要変更として検出されていない）",
+			second.UpdatedCount)
+	}
+
+	got, ok := repo.jobByID(1)
+	if !ok {
+		t.Fatal("案件が保存されていない")
+	}
+	if got.RateMin == nil || *got.RateMin != 900000 {
+		t.Errorf("RateMin = %v, want 900000（DB の値が更新されていない）", got.RateMin)
+	}
+	if got.RateMax == nil || *got.RateMax != 1000000 {
+		t.Errorf("RateMax = %v, want 1000000（DB の値が更新されていない）", got.RateMax)
 	}
 }
 

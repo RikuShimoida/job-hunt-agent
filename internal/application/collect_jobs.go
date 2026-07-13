@@ -19,25 +19,41 @@ type CollectSummary struct {
 	FetchedCount   int
 	NewCount       int
 	DuplicateCount int
-	FailedSources  []string
+	// UpdatedCount は既存案件で重要変更が検出された件数。
+	UpdatedCount  int
+	FailedSources []string
 }
 
 // Collector は有効なコネクタから案件を収集して保存する。
 type Collector struct {
-	repo       port.Repository
-	connectors []port.Connector
-	logger     *slog.Logger
-	now        func() time.Time
+	repo          port.Repository
+	connectors    []port.Connector
+	errorNotifier port.ErrorNotifier
+	logger        *slog.Logger
+	now           func() time.Time
 }
 
-func NewCollector(repo port.Repository, connectors []port.Connector, logger *slog.Logger, now func() time.Time) *Collector {
-	return &Collector{repo: repo, connectors: connectors, logger: logger, now: now}
+func NewCollector(
+	repo port.Repository,
+	connectors []port.Connector,
+	errorNotifier port.ErrorNotifier,
+	logger *slog.Logger,
+	now func() time.Time,
+) *Collector {
+	return &Collector{
+		repo:          repo,
+		connectors:    connectors,
+		errorNotifier: errorNotifier,
+		logger:        logger,
+		now:           now,
+	}
 }
 
 // Collect は全コネクタを順に実行する。
 // あるコネクタが失敗しても他コネクタの処理は継続し、失敗はサマリとログに残す。
 func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummary, error) {
 	var summary CollectSummary
+	var failures []model.SourceFailure
 
 	if !p.CollectsEnabled() {
 		c.logger.InfoContext(ctx, "収集をスキップしました",
@@ -51,6 +67,10 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 		raws, err := conn.Fetch(ctx)
 		if err != nil {
 			summary.FailedSources = append(summary.FailedSources, conn.Name())
+			failures = append(failures, model.SourceFailure{
+				SourceName: conn.Name(),
+				Message:    err.Error(),
+			})
 			c.logger.ErrorContext(ctx, "ソースの取得に失敗しました",
 				slog.String("source", conn.Name()),
 				slog.String("error", err.Error()))
@@ -80,10 +100,10 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 
 		deduped := deduplication.Dedupe(jobs)
 
-		var newCount, dupCount int
+		var newCount, dupCount, updatedCount int
 		var saveErr error
 		for i := range deduped.Jobs {
-			created, err := c.repo.SaveJob(ctx, &deduped.Jobs[i])
+			result, err := c.repo.SaveJob(ctx, &deduped.Jobs[i])
 			if err != nil {
 				saveErr = err
 				c.logger.ErrorContext(ctx, "案件の保存に失敗しました",
@@ -91,10 +111,18 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 					slog.String("error", err.Error()))
 				break
 			}
-			if created {
+			switch {
+			case result.Created:
 				newCount++
-			} else {
+			default:
 				dupCount++
+				if len(result.MaterialChanges) > 0 {
+					updatedCount++
+					c.logger.InfoContext(ctx, "既存案件に重要な変更を検出しました",
+						slog.String("source", conn.Name()),
+						slog.Int64("job_id", deduped.Jobs[i].ID),
+						slog.Any("changes", result.MaterialChanges))
+				}
 			}
 		}
 
@@ -103,6 +131,7 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 		summary.FetchedCount += len(raws)
 		summary.NewCount += newCount
 		summary.DuplicateCount += dupCount + deduped.DuplicateCount
+		summary.UpdatedCount += updatedCount
 
 		run := &model.CollectionRun{
 			SourceName:     conn.Name(),
@@ -115,6 +144,10 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 		}
 		if saveErr != nil {
 			summary.FailedSources = append(summary.FailedSources, conn.Name())
+			failures = append(failures, model.SourceFailure{
+				SourceName: conn.Name(),
+				Message:    saveErr.Error(),
+			})
 			run.Status = model.RunStatusFailed
 			run.ErrorMessage = saveErr.Error()
 		}
@@ -128,16 +161,32 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 			slog.String("source", conn.Name()),
 			slog.Int("fetched", len(raws)),
 			slog.Int("new", newCount),
-			slog.Int("duplicate", dupCount+deduped.DuplicateCount))
+			slog.Int("duplicate", dupCount+deduped.DuplicateCount),
+			slog.Int("updated", updatedCount))
 	}
+
+	c.notifyFailures(ctx, failures)
 
 	c.logger.InfoContext(ctx, "収集サマリ",
 		slog.Int("fetched", summary.FetchedCount),
 		slog.Int("new", summary.NewCount),
 		slog.Int("duplicate", summary.DuplicateCount),
+		slog.Int("updated", summary.UpdatedCount),
 		slog.Any("failed_sources", summary.FailedSources))
 
 	return summary, nil
+}
+
+// notifyFailures は収集の最後に失敗をまとめて1回だけ通知する。
+// 失敗のたびに送ると、ソースが軒並み落ちたときに通知が埋まるため。
+func (c *Collector) notifyFailures(ctx context.Context, failures []model.SourceFailure) {
+	if len(failures) == 0 {
+		return
+	}
+	if err := c.errorNotifier.NotifyError(ctx, failures); err != nil {
+		c.logger.ErrorContext(ctx, "エラー通知の送信に失敗しました",
+			slog.String("error", err.Error()))
+	}
 }
 
 // saveRun は実行履歴の保存失敗で収集全体を落とさない（履歴は副次的な記録のため）。
