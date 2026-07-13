@@ -7,6 +7,7 @@ import (
 
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/model"
 	"github.com/RikuShimoida/job-hunt-agent/internal/matching"
+	"github.com/RikuShimoida/job-hunt-agent/internal/normalization"
 )
 
 func profile() model.Profile {
@@ -406,6 +407,37 @@ func TestEvaluateRemoteRequiredRejectsOnsiteAndHybrid(t *testing.T) {
 					got.Rejected, tt.wantRejected, got.Score, got.RejectionReasons)
 			}
 		})
+	}
+}
+
+// TestEvaluateRejectsBasicRemoteFromRealEmail は、実エージェントのメールにある
+// 「基本リモート（必要に応じて出社あり）」という表記が、正規化を経て
+// remote_required のプロフィールで確実に除外されることを固定する。
+//
+// 以前は normalization.Remote がこの表記をどのパターンにも当てられず unknown に
+// 落としており、reject は unknown を除外しないため、フルリモート必須の利用者へ
+// 出社を伴う案件がそのまま通知されていた。
+func TestEvaluateRejectsBasicRemoteFromRealEmail(t *testing.T) {
+	t.Parallel()
+
+	p := profile()
+	if !p.RemoteRequired {
+		t.Fatal("前提が崩れている: profile() は RemoteRequired = true であるべき")
+	}
+
+	job := perfectJob()
+	job.RemoteType, job.OnsiteDays = normalization.Remote("六本木駅 ※基本リモート（必要に応じて出社あり）")
+
+	if job.RemoteType != model.RemoteTypeHybrid {
+		t.Fatalf("RemoteType = %q, want %q", job.RemoteType, model.RemoteTypeHybrid)
+	}
+
+	got := matching.Evaluate(job, p)
+	if !got.Rejected {
+		t.Fatalf("Rejected = false, want true（score=%d, reasons=%v）", got.Score, got.ScoreReasons)
+	}
+	if got.Score != 0 {
+		t.Errorf("Score = %d, want 0", got.Score)
 	}
 }
 
