@@ -48,16 +48,19 @@ func Evaluate(job model.JobPosting, p model.Profile) Result {
 	)
 
 	// 単価
+	//
+	// 抽出できなかった項目をここで理由に挙げないのは、「読み取れなかった」の列挙を
+	// 表示層（notifier/message）へ集約しているため。両方で持つと通知の「懸念：」へ
+	// 同じ内容が二重に出る。scorer は「希望と合わない理由」だけを持つ。
 	switch {
 	case job.RateMax == nil:
-		demerit = append(demerit, "単価が読み取れなかった")
 	case !comparableRate(job):
-		demerit = append(demerit, fmt.Sprintf("月額換算できないため単価を比較できなかった（%s）", formatRate(job)))
+		demerit = append(demerit, fmt.Sprintf("単価が%sで、月額換算できないため希望単価と比較できない", formatRate(job)))
 	case p.TargetRate > 0 && *job.RateMax >= p.TargetRate:
 		score += pointsRate
-		reasons = append(reasons, fmt.Sprintf("希望単価以上（%s）", formatRate(job)))
+		reasons = append(reasons, fmt.Sprintf("希望単価 %s に到達している", formatRate(job)))
 	default:
-		demerit = append(demerit, fmt.Sprintf("希望単価に届かない（%s）", formatRate(job)))
+		demerit = append(demerit, fmt.Sprintf("単価が%sで、希望単価に届かない", formatRate(job)))
 	}
 
 	// リモート
@@ -68,18 +71,22 @@ func Evaluate(job model.JobPosting, p model.Profile) Result {
 	switch job.RemoteType {
 	case model.RemoteTypeFullRemote:
 		score += pointsFullRemote + pointsOnsiteOK
-		reasons = append(reasons, "フルリモート")
+		reasons = append(reasons, "フルリモートで出社が不要")
 	case model.RemoteTypeHybrid:
-		if job.OnsiteDays != nil && *job.OnsiteDays <= p.MaxOnsiteDays {
+		// 出社日数が nil のとき demerit を積まないのは、「超過が確定した」と断定すると
+		// 本文（message.formatRemote は日数 nil を「不明」表示にする）と食い違うため。
+		// 出社日数不明の懸念は表示層（notifier/message）が「記載されていない」として挙げる。
+		switch {
+		case job.OnsiteDays == nil:
+		case *job.OnsiteDays <= p.MaxOnsiteDays:
 			score += pointsOnsiteOK
-			reasons = append(reasons, fmt.Sprintf("許容範囲の出社頻度（週%d日）", *job.OnsiteDays))
-		} else {
+			reasons = append(reasons, fmt.Sprintf("出社は週%d日で、許容範囲の出社頻度に収まる", *job.OnsiteDays))
+		default:
 			demerit = append(demerit, "出社頻度が許容範囲を超える")
 		}
 	case model.RemoteTypeOnsite:
-		demerit = append(demerit, "常駐")
+		demerit = append(demerit, "常駐案件で出社が必要")
 	case model.RemoteTypeUnknown:
-		demerit = append(demerit, "リモート条件が読み取れなかった")
 	}
 
 	// 得意スキル
@@ -92,9 +99,9 @@ func Evaluate(job model.JobPosting, p model.Profile) Result {
 		}
 		score += pt
 		reasons = append(reasons,
-			fmt.Sprintf("得意スキル%d件一致（%s）", len(matchedSkills), strings.Join(matchedSkills, "、")))
+			fmt.Sprintf("得意スキルの %s が一致する", strings.Join(matchedSkills, "、")))
 	} else {
-		demerit = append(demerit, "得意スキルとの一致なし")
+		demerit = append(demerit, "得意スキルと一致するものがない")
 	}
 
 	// 役割
@@ -106,7 +113,7 @@ func Evaluate(job model.JobPosting, p model.Profile) Result {
 		}
 		score += pt
 		reasons = append(reasons,
-			fmt.Sprintf("希望する役割と一致（%s）", strings.Join(matchedRoles, "、")))
+			fmt.Sprintf("希望する役割の %s に合う", strings.Join(matchedRoles, "、")))
 	}
 
 	// 参画時期
@@ -114,9 +121,10 @@ func Evaluate(job model.JobPosting, p model.Profile) Result {
 		if !job.StartDate.Before(*p.AvailableFrom) {
 			score += pointsStartDate
 			reasons = append(reasons,
-				fmt.Sprintf("参画希望時期と一致（%s〜）", job.StartDate.Format("2006-01-02")))
+				fmt.Sprintf("%s 開始で、参画希望時期に間に合う", job.StartDate.Format("2006-01-02")))
 		} else {
-			demerit = append(demerit, "開始時期が参画可能日より早い")
+			demerit = append(demerit,
+				fmt.Sprintf("%s 開始で、参画可能日より早い", job.StartDate.Format("2006-01-02")))
 		}
 	}
 
@@ -124,9 +132,12 @@ func Evaluate(job model.JobPosting, p model.Profile) Result {
 	if job.WorkDaysMin != nil && job.WorkDaysMax != nil && p.PreferredWorkDays > 0 {
 		if p.PreferredWorkDays >= *job.WorkDaysMin && p.PreferredWorkDays <= *job.WorkDaysMax {
 			score += pointsWorkDaysFit
-			reasons = append(reasons, fmt.Sprintf("希望稼働と一致（週%d日）", p.PreferredWorkDays))
+			reasons = append(reasons,
+				fmt.Sprintf("週%d日で稼働でき、希望する稼働日数に合う", p.PreferredWorkDays))
 		} else {
-			demerit = append(demerit, "希望稼働と合わない")
+			demerit = append(demerit,
+				fmt.Sprintf("案件の稼働日数が%sで、希望する週%d日と合わない",
+					formatWorkDays(job), p.PreferredWorkDays))
 		}
 	}
 
@@ -232,16 +243,36 @@ func containsFold(list []string, s string) bool {
 	return false
 }
 
+// formatWorkDays は稼働日数を表記する。呼び出し元が両端の非 nil を確かめてから使う。
+func formatWorkDays(job model.JobPosting) string {
+	if job.WorkDaysMin == nil || job.WorkDaysMax == nil {
+		return "不明"
+	}
+	if *job.WorkDaysMin == *job.WorkDaysMax {
+		return fmt.Sprintf("週%d日", *job.WorkDaysMin)
+	}
+	return fmt.Sprintf("週%d〜%d日", *job.WorkDaysMin, *job.WorkDaysMax)
+}
+
+// formatRate の nil 判定は notifier/message.formatRate と揃える（両端 nil のときだけ「不明」）。
+// 片側 nil を「不明」に丸めると、本文が `単価：〜850000円` なのに推奨理由が
+// 「希望単価 不明 に到達している」となり、通知内で単価表記が食い違う。
 func formatRate(job model.JobPosting) string {
-	if job.RateMin == nil || job.RateMax == nil {
+	if job.RateMin == nil && job.RateMax == nil {
 		return "不明"
 	}
 	unit := "円"
 	if job.RateType == model.RateTypeHourly {
 		unit = "円/時"
 	}
-	if *job.RateMin == *job.RateMax {
+	switch {
+	case job.RateMax == nil:
+		return fmt.Sprintf("%d%s〜", *job.RateMin, unit)
+	case job.RateMin == nil:
+		return fmt.Sprintf("〜%d%s", *job.RateMax, unit)
+	case *job.RateMin == *job.RateMax:
 		return fmt.Sprintf("%d%s", *job.RateMin, unit)
+	default:
+		return fmt.Sprintf("%d〜%d%s", *job.RateMin, *job.RateMax, unit)
 	}
-	return fmt.Sprintf("%d〜%d%s", *job.RateMin, *job.RateMax, unit)
 }

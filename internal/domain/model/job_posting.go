@@ -49,7 +49,14 @@ type JobPosting struct {
 	PreferredSkills []string
 	Roles           []string
 
-	SourceURL   string
+	SourceURL string
+	// ApplyURL は応募（エントリー）フォームの URL。SourceURL とは別に持つ。
+	//
+	// SourceURL へ相乗りさせないのは、応募 URL が提携企業ごとに共通で案件ごとに
+	// 一意でないため。DedupKey は SourceURL を "url:" 鍵に使うので、共通 URL が
+	// 流れ込むと同一企業の複数案件が同じ鍵になり、「衝突したら既存行を更新する」
+	// 仕様で先に保存した案件が上書きされて消える。
+	ApplyURL    string
 	PublishedAt *time.Time
 	FirstSeenAt time.Time
 	LastSeenAt  time.Time

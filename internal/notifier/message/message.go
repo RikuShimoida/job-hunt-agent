@@ -79,11 +79,23 @@ func Format(item port.NotifyItem) string {
 	if skills := job.RequiredSkills; len(skills) > 0 {
 		fmt.Fprintf(&b, "主要スキル：%s\n", strings.Join(skills, "、"))
 	}
-	if len(job.ScoreReasons) > 0 {
-		fmt.Fprintf(&b, "加点：%s\n", strings.Join(job.ScoreReasons, "、"))
+	if reasons := job.ScoreReasons; len(reasons) > 0 {
+		b.WriteString("推奨理由：\n")
+		for _, r := range reasons {
+			fmt.Fprintf(&b, "・%s\n", r)
+		}
 	}
-	if len(job.RejectionReasons) > 0 {
-		fmt.Fprintf(&b, "減点：%s\n", strings.Join(job.RejectionReasons, "、"))
+	if cs := concerns(job); len(cs) > 0 {
+		b.WriteString("懸念：\n")
+		for _, c := range cs {
+			fmt.Fprintf(&b, "・%s\n", c)
+		}
+	}
+
+	// 応募 URL と案件詳細 URL は別物。クラウドテックは前者だけ、フォスターネットは
+	// 後者だけを持つため、片方に寄せると一方のソースで応募導線が消える。
+	if url := strings.TrimSpace(job.ApplyURL); url != "" {
+		fmt.Fprintf(&b, "応募：%s\n", url)
 	}
 	if url := strings.TrimSpace(job.SourceURL); url != "" {
 		fmt.Fprintf(&b, "URL：%s\n", url)
@@ -91,6 +103,39 @@ func Format(item port.NotifyItem) string {
 	b.WriteString("\n")
 
 	return b.String()
+}
+
+// missingFields は「抽出できなかった」ことを懸念として挙げる項目。
+//
+// 抽出漏れの列挙を matching.Evaluate 側へ持たせないのは、scorer が
+// 「希望と合わない理由」を返し、表示層も同じ内容を足すと通知へ二重に出るため。
+// 判定条件は本文の各フォーマッタが「不明」を出す条件と揃える（本文が「不明」なのに
+// 懸念に挙がらない、あるいはその逆、という食い違いを防ぐ）。
+var missingFields = []struct {
+	missing func(model.JobPosting) bool
+	reason  string
+}{
+	{func(j model.JobPosting) bool { return j.RateMin == nil && j.RateMax == nil }, "単価が案件情報に記載されていない"},
+	{func(j model.JobPosting) bool { return j.StartDate == nil }, "開始時期が案件情報に記載されていない"},
+	{func(j model.JobPosting) bool { return j.RemoteType == model.RemoteTypeUnknown }, "リモート条件が案件情報に記載されていない"},
+	// ハイブリッドで出社日数が nil のとき、勤務行は「ハイブリッド」（日数なし＝不明）を出す。
+	// scorer も超過を断定せず加点0にするため、ここで「記載されていない」を懸念に挙げて整合させる。
+	{func(j model.JobPosting) bool {
+		return j.RemoteType == model.RemoteTypeHybrid && j.OnsiteDays == nil
+	}, "出社日数が案件情報に記載されていない"},
+	{func(j model.JobPosting) bool { return j.WorkDaysMin == nil || j.WorkDaysMax == nil }, "稼働日数が案件情報に記載されていない"},
+}
+
+// concerns は「希望と合わない理由」（scorer 由来）と「読み取れなかった項目」を並べる。
+func concerns(job model.JobPosting) []string {
+	out := make([]string, 0, len(job.RejectionReasons)+len(missingFields))
+	out = append(out, job.RejectionReasons...)
+	for _, f := range missingFields {
+		if f.missing(job) {
+			out = append(out, f.reason)
+		}
+	}
+	return out
 }
 
 // changedLines は前回通知時点のスナップショットと現在の案件を突き合わせ、

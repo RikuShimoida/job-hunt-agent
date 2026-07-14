@@ -229,8 +229,34 @@ func TestEvaluateProducesReasons(t *testing.T) {
 	if !containsSubstring(got.ScoreReasons, "フルリモート") {
 		t.Errorf("ScoreReasons = %v, want to contain フルリモート", got.ScoreReasons)
 	}
-	if !containsSubstring(got.ScoreReasons, "希望単価以上") {
-		t.Errorf("ScoreReasons = %v, want to contain 希望単価以上", got.ScoreReasons)
+	if !containsSubstring(got.ScoreReasons, "希望単価 800000〜850000円 に到達している") {
+		t.Errorf("ScoreReasons = %v, want to contain 希望単価…に到達している", got.ScoreReasons)
+	}
+}
+
+// TestEvaluateOmitsExtractionMisses は、抽出できなかった項目を scorer が
+// 理由として持たないことを固定する（Issue #21）。
+//
+// 抽出漏れの列挙は表示層（notifier/message）に集約している。scorer 側にも残すと
+// 通知の「懸念：」へ同じ内容が二重に出るため、ここで構造的に防ぐ。
+func TestEvaluateOmitsExtractionMisses(t *testing.T) {
+	t.Parallel()
+
+	job := perfectJob()
+	job.RateType = model.RateTypeUnknown
+	job.RateMin, job.RateMax = nil, nil
+	job.RemoteType = model.RemoteTypeUnknown
+	job.OnsiteDays = nil
+
+	got := matching.Evaluate(job, profile())
+
+	if got.Rejected {
+		t.Fatalf("抽出漏れで除外してはならない: %v", got.RejectionReasons)
+	}
+	for _, unwant := range []string{"読み取れなかった", "記載されていない"} {
+		if containsSubstring(got.RejectionReasons, unwant) {
+			t.Errorf("scorer が抽出漏れを理由に挙げている（表示層と二重になる）: %v", got.RejectionReasons)
+		}
 	}
 }
 
@@ -282,6 +308,40 @@ func TestEvaluateHybridExceedingAllowedOnsiteDays(t *testing.T) {
 	if !containsSubstring(got.RejectionReasons, "出社頻度が許容範囲を超える") {
 		t.Errorf("RejectionReasons = %v, want to contain 出社頻度が許容範囲を超える",
 			got.RejectionReasons)
+	}
+}
+
+// TestEvaluateHybridWithUnknownOnsiteDays は、出社日数が読み取れないハイブリッド案件で
+// scorer が「出社頻度が許容範囲を超える」を断定しないことを固定する。
+//
+// 出社日数 nil を超過扱いにすると、本文（message.formatRemote が日数 nil を「不明」表示、
+// 懸念に「出社日数が案件情報に記載されていない」を挙げる）と食い違う。
+// フォスターネットの「※基本リモート（必要に応じて出社あり）」がこの状態に正規化される。
+func TestEvaluateHybridWithUnknownOnsiteDays(t *testing.T) {
+	t.Parallel()
+
+	p := profile()
+	p.RemoteRequired = false
+	p.MaxOnsiteDays = 1
+
+	job := perfectJob()
+	job.RemoteType = model.RemoteTypeHybrid
+	job.OnsiteDays = nil
+
+	got := matching.Evaluate(job, p)
+
+	if got.Rejected {
+		t.Fatalf("Rejected = true, want false (reasons=%v)", got.RejectionReasons)
+	}
+	if containsSubstring(got.RejectionReasons, "出社頻度が許容範囲を超える") {
+		t.Errorf("出社日数不明なのに超過を断定している: %v", got.RejectionReasons)
+	}
+	if containsSubstring(got.ScoreReasons, "許容範囲の出社頻度") {
+		t.Errorf("出社日数不明なのに出社頻度の加点理由が付いている: %v", got.ScoreReasons)
+	}
+	// リモート関連の加点が付かないため 100 - 30 = 70。加点も減点もしない。
+	if got.Score != 70 {
+		t.Errorf("Score = %d, want 70 (reasons=%v)", got.Score, got.ScoreReasons)
 	}
 }
 
@@ -467,7 +527,7 @@ func TestEvaluateHourlyRateIsNotComparedToMonthlyMinimum(t *testing.T) {
 	if !containsSubstring(got.RejectionReasons, "月額換算できない") {
 		t.Errorf("RejectionReasons = %v, want to contain 月額換算できない", got.RejectionReasons)
 	}
-	if containsSubstring(got.ScoreReasons, "希望単価以上") {
+	if containsSubstring(got.ScoreReasons, "希望単価") {
 		t.Errorf("比較できないはずの時給案件に単価の加点が付いた: %v", got.ScoreReasons)
 	}
 }

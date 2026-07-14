@@ -29,7 +29,10 @@ const (
 	FieldPreferredSkills = "preferred_skills"
 	FieldRoles           = "roles"
 	FieldURL             = "url"
-	FieldSummary         = "summary"
+	// FieldApplyURL は応募（エントリー）フォームの URL。FieldURL とは別に持つ。
+	// 提携企業ごとに共通で案件ごとに一意でないため、DedupKey の入力にはしない。
+	FieldApplyURL = "apply_url"
+	FieldSummary  = "summary"
 	// FieldJobID はソースが案件へ振る一意の ID（クラウドテックの「JA-086984」など）。
 	FieldJobID = "job_id"
 )
@@ -69,8 +72,11 @@ func Build(raw model.RawJob, f Fields, now time.Time) model.JobPosting {
 	if job.SourceURL == "" {
 		job.SourceURL = raw.SourceURL
 	}
+	job.ApplyURL = strings.TrimSpace(f[FieldApplyURL])
 
 	job.ContentHash = ContentHash(job.Title, job.CompanyName, raw.Body)
+	// ApplyURL を渡さないのは、応募 URL が案件ごとに一意でないため。
+	// 重複判定へ流れ込むと、同一企業の別案件が同じ鍵になって上書きされて消える。
 	job.DedupKey = DedupKey(raw.SourceName, f[FieldJobID], job.SourceURL, job.ContentHash)
 
 	job.Sources = []model.JobSource{{

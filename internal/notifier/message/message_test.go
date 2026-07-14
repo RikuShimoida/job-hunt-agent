@@ -28,19 +28,23 @@ func fullJob() model.JobPosting {
 	days := 3
 
 	return model.JobPosting{
-		Title:            "Java／AWS 基盤改善案件",
-		Score:            92,
-		RateType:         model.RateTypeMonthly,
-		RateMin:          &rateMin,
-		RateMax:          &rateMax,
-		WorkDaysMin:      &days,
-		WorkDaysMax:      &days,
-		RemoteType:       model.RemoteTypeFullRemote,
-		Location:         "東京",
-		StartDate:        &start,
-		RequiredSkills:   []string{"Java", "Spring", "AWS", "Docker"},
-		SourceURL:        "https://example.test/jobs/1",
-		ScoreReasons:     []string{"希望単価以上", "フルリモート", "得意スキル4件一致"},
+		Title:          "Java／AWS 基盤改善案件",
+		Score:          92,
+		RateType:       model.RateTypeMonthly,
+		RateMin:        &rateMin,
+		RateMax:        &rateMax,
+		WorkDaysMin:    &days,
+		WorkDaysMax:    &days,
+		RemoteType:     model.RemoteTypeFullRemote,
+		Location:       "東京",
+		StartDate:      &start,
+		RequiredSkills: []string{"Java", "Spring", "AWS", "Docker"},
+		SourceURL:      "https://example.test/jobs/1",
+		ScoreReasons: []string{
+			"希望単価 800000円 に到達している",
+			"フルリモートで出社が不要",
+			"得意スキルの Spring、Docker、Terraform が一致する",
+		},
 		RejectionReasons: []string{"Terraform実務経験が歓迎条件"},
 		Sources: []model.JobSource{
 			{SourceName: "レバテック"},
@@ -65,7 +69,7 @@ func TestFormatIncludesAllRequiredFields(t *testing.T) {
 		"東京",
 		"Java、Spring、AWS、Docker",
 		"レバテック",
-		"希望単価以上",
+		"希望単価 800000円 に到達している",
 		"Terraform実務経験が歓迎条件",
 		"https://example.test/jobs/1",
 	}
@@ -73,6 +77,202 @@ func TestFormatIncludesAllRequiredFields(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("本文に %q が含まれていない\n--- 本文 ---\n%s", want, out)
 		}
+	}
+}
+
+// TestFormatShowsRecommendationAndConcerns は、通知本文が「推奨理由：」「懸念：」の
+// 箇条書きを出すことを確かめる（Issue #21）。
+func TestFormatShowsRecommendationAndConcerns(t *testing.T) {
+	t.Parallel()
+
+	out := message.Format(newItem(fullJob()))
+
+	for _, want := range []string{
+		"推奨理由：\n",
+		"・希望単価 800000円 に到達している\n",
+		"・フルリモートで出社が不要\n",
+		"懸念：\n",
+		"・Terraform実務経験が歓迎条件\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("本文に %q が含まれていない\n--- 本文 ---\n%s", want, out)
+		}
+	}
+	// 旧表記（1行へ「、」で連結する形式）へ戻っていないこと。
+	for _, unwant := range []string{"加点：", "減点："} {
+		if strings.Contains(out, unwant) {
+			t.Errorf("本文に旧表記 %q が残っている\n--- 本文 ---\n%s", unwant, out)
+		}
+	}
+}
+
+// TestFormatConcernsIncludeExtractionMisses は、抽出できなかった項目が
+// 「懸念：」へ挙がることと、二重に出ないことを確かめる（Issue #21）。
+//
+// 二重表示は matching.Evaluate と表示層の双方が抽出漏れを理由に持つと起きる。
+// scorer 側は「希望と合わない理由」だけを持ち、抽出漏れの列挙はここへ集約している。
+func TestFormatConcernsIncludeExtractionMisses(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*model.JobPosting)
+		want   []string
+		unwant []string
+	}{
+		{
+			name: "開始時期が抽出できなければ懸念に挙げる",
+			mutate: func(j *model.JobPosting) {
+				j.StartDate = nil
+			},
+			want:   []string{"懸念：", "・開始時期が案件情報に記載されていない"},
+			unwant: []string{"・単価が案件情報に記載されていない"},
+		},
+		{
+			name: "単価が抽出できなければ懸念に挙げる",
+			mutate: func(j *model.JobPosting) {
+				j.RateType, j.RateMin, j.RateMax = model.RateTypeUnknown, nil, nil
+			},
+			want:   []string{"・単価が案件情報に記載されていない"},
+			unwant: []string{"・開始時期が案件情報に記載されていない"},
+		},
+		{
+			name: "リモート条件が抽出できなければ懸念に挙げる",
+			mutate: func(j *model.JobPosting) {
+				j.RemoteType, j.OnsiteDays = model.RemoteTypeUnknown, nil
+			},
+			want:   []string{"・リモート条件が案件情報に記載されていない"},
+			unwant: []string{"・稼働日数が案件情報に記載されていない"},
+		},
+		{
+			name: "稼働日数が抽出できなければ懸念に挙げる",
+			mutate: func(j *model.JobPosting) {
+				j.WorkDaysMin, j.WorkDaysMax = nil, nil
+			},
+			want:   []string{"・稼働日数が案件情報に記載されていない"},
+			unwant: []string{"・リモート条件が案件情報に記載されていない"},
+		},
+		{
+			name:   "すべて抽出できていれば抽出漏れの懸念は出さない",
+			mutate: func(*model.JobPosting) {},
+			unwant: []string{"案件情報に記載されていない"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			job := fullJob()
+			tt.mutate(&job)
+
+			out := message.Format(newItem(job))
+
+			for _, want := range tt.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("本文に %q が含まれていない\n--- 本文 ---\n%s", want, out)
+				}
+			}
+			for _, unwant := range tt.unwant {
+				if strings.Contains(out, unwant) {
+					t.Errorf("本文に %q が含まれてしまっている\n--- 本文 ---\n%s", unwant, out)
+				}
+			}
+			// 同じ懸念が2度出ていないこと（scorer と表示層の二重計上を防ぐ）。
+			for _, line := range tt.want {
+				if strings.HasPrefix(line, "・") && strings.Count(out, line) > 1 {
+					t.Errorf("懸念 %q が二重に出ている\n--- 本文 ---\n%s", line, out)
+				}
+			}
+		})
+	}
+}
+
+// TestFormatConcernsIncludeHybridUnknownOnsiteDays は、ハイブリッドで出社日数が
+// 読み取れない案件に「出社日数が案件情報に記載されていない」の懸念が出ることを確かめる。
+//
+// scorer は出社日数 nil のとき超過を断定せず加点0にする。本文の勤務行も日数を出さない
+// 「ハイブリッド」表示になるため、懸念でも「不明」であることを明示して食い違いを防ぐ。
+func TestFormatConcernsIncludeHybridUnknownOnsiteDays(t *testing.T) {
+	t.Parallel()
+
+	job := fullJob()
+	job.RemoteType = model.RemoteTypeHybrid
+	job.OnsiteDays = nil
+
+	out := message.Format(newItem(job))
+
+	if !strings.Contains(out, "懸念：") || !strings.Contains(out, "・出社日数が案件情報に記載されていない") {
+		t.Errorf("ハイブリッドで出社日数不明の懸念が出ていない\n--- 本文 ---\n%s", out)
+	}
+	// 勤務行は日数を伴わない「ハイブリッド」表示（懸念の「不明」と揃える）。
+	if !strings.Contains(out, "勤務：ハイブリッド　") {
+		t.Errorf("勤務行が日数なしのハイブリッド表示になっていない\n--- 本文 ---\n%s", out)
+	}
+}
+
+// TestFormatApplyURL は応募リンクの出力条件を確かめる（Issue #21）。
+//
+// 応募 URL（クラウドテック）と案件詳細 URL（フォスターネット）は別物で、
+// ソースによってどちらか一方しか持たない。
+func TestFormatApplyURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		applyURL  string
+		sourceURL string
+		want      []string
+		unwant    []string
+	}{
+		{
+			name:     "応募 URL があれば応募行を出す（クラウドテック）",
+			applyURL: "https://share.hsforms.test/abc123",
+			want:     []string{"応募：https://share.hsforms.test/abc123"},
+			unwant:   []string{"URL："},
+		},
+		{
+			name:      "案件詳細 URL があれば URL 行を出す（フォスターネット）",
+			sourceURL: "https://example-agent.test/projects/detail/J00001",
+			want:      []string{"URL：https://example-agent.test/projects/detail/J00001"},
+			unwant:    []string{"応募："},
+		},
+		{
+			name:      "両方あれば両方出す",
+			applyURL:  "https://share.hsforms.test/abc123",
+			sourceURL: "https://example-agent.test/projects/detail/J00001",
+			want: []string{
+				"応募：https://share.hsforms.test/abc123",
+				"URL：https://example-agent.test/projects/detail/J00001",
+			},
+		},
+		{
+			name:   "どちらも無ければどちらの行も出さない",
+			unwant: []string{"応募：", "URL："},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			job := fullJob()
+			job.ApplyURL = tt.applyURL
+			job.SourceURL = tt.sourceURL
+
+			out := message.Format(newItem(job))
+
+			for _, want := range tt.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("本文に %q が含まれていない\n--- 本文 ---\n%s", want, out)
+				}
+			}
+			for _, unwant := range tt.unwant {
+				if strings.Contains(out, unwant) {
+					t.Errorf("本文に %q が含まれてしまっている\n--- 本文 ---\n%s", unwant, out)
+				}
+			}
+		})
 	}
 }
 

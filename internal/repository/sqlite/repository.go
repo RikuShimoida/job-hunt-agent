@@ -22,7 +22,7 @@ const jobColumns = `id, title, company_name, summary, raw_text,
 	remote_type, onsite_days, location,
 	start_date, end_date, contract_type,
 	required_skills, preferred_skills, roles,
-	source_url, published_at, first_seen_at, last_seen_at,
+	source_url, apply_url, published_at, first_seen_at, last_seen_at,
 	dedup_key, content_hash,
 	status, score, score_reasons, rejection_reasons`
 
@@ -112,7 +112,7 @@ func scanJob(s rowScanner) (model.JobPosting, error) {
 		&remoteType, &j.OnsiteDays, &j.Location,
 		&j.StartDate, &j.EndDate, &j.ContractType,
 		&requiredSkills, &preferredSkills, &roles,
-		&j.SourceURL, &j.PublishedAt, &j.FirstSeenAt, &j.LastSeenAt,
+		&j.SourceURL, &j.ApplyURL, &j.PublishedAt, &j.FirstSeenAt, &j.LastSeenAt,
 		&j.DedupKey, &j.ContentHash,
 		&status, &j.Score, &scoreReasons, &rejectionReasons,
 	); err != nil {
@@ -137,10 +137,10 @@ func insertJob(ctx context.Context, tx *sql.Tx, job *model.JobPosting) (int64, e
 		remote_type, onsite_days, location,
 		start_date, end_date, contract_type,
 		required_skills, preferred_skills, roles,
-		source_url, published_at, first_seen_at, last_seen_at,
+		source_url, apply_url, published_at, first_seen_at, last_seen_at,
 		dedup_key, content_hash,
 		status, score, score_reasons, rejection_reasons
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	res, err := tx.ExecContext(ctx, q,
 		job.Title, job.CompanyName, job.Summary, job.RawText,
@@ -149,7 +149,7 @@ func insertJob(ctx context.Context, tx *sql.Tx, job *model.JobPosting) (int64, e
 		string(job.RemoteType), job.OnsiteDays, job.Location,
 		job.StartDate, job.EndDate, job.ContractType,
 		encodeList(job.RequiredSkills), encodeList(job.PreferredSkills), encodeList(job.Roles),
-		job.SourceURL, job.PublishedAt, job.FirstSeenAt, job.LastSeenAt,
+		job.SourceURL, job.ApplyURL, job.PublishedAt, job.FirstSeenAt, job.LastSeenAt,
 		job.DedupKey, job.ContentHash,
 		string(job.Status), job.Score,
 		encodeList(job.ScoreReasons), encodeList(job.RejectionReasons),
@@ -174,7 +174,7 @@ func updateJob(ctx context.Context, tx *sql.Tx, job *model.JobPosting) error {
 		remote_type = ?, onsite_days = ?, location = ?,
 		start_date = ?, end_date = ?, contract_type = ?,
 		required_skills = ?, preferred_skills = ?, roles = ?,
-		source_url = ?, published_at = ?, last_seen_at = ?,
+		source_url = ?, apply_url = ?, published_at = ?, last_seen_at = ?,
 		content_hash = ?
 	WHERE id = ?`
 
@@ -185,7 +185,7 @@ func updateJob(ctx context.Context, tx *sql.Tx, job *model.JobPosting) error {
 		string(job.RemoteType), job.OnsiteDays, job.Location,
 		job.StartDate, job.EndDate, job.ContractType,
 		encodeList(job.RequiredSkills), encodeList(job.PreferredSkills), encodeList(job.Roles),
-		job.SourceURL, job.PublishedAt, job.LastSeenAt,
+		job.SourceURL, job.ApplyURL, job.PublishedAt, job.LastSeenAt,
 		job.ContentHash,
 		job.ID,
 	); err != nil {
