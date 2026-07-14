@@ -49,6 +49,8 @@ const (
 	defaultTimeout  = 30 * time.Second
 	// Gmail の messages.list が1回に返す上限。
 	maxPageSize = 100
+	// 1レスポンスから読む最大バイト数（Gmail のメッセージ上限 25MB に余裕を持たせる）。
+	maxResponseBytes = 32 << 20
 )
 
 // Connector は送信元を絞って案件メールを取得する。
@@ -59,8 +61,8 @@ type Connector struct {
 	maxResults  int
 	tokenSource oauth2.TokenSource
 
-	endpoint string
-	client   *http.Client
+	endpoint  string
+	transport http.RoundTripper
 }
 
 // Option はコネクタの差し替え可能な部分を設定する。
@@ -71,9 +73,13 @@ func WithEndpoint(endpoint string) Option {
 	return func(c *Connector) { c.endpoint = endpoint }
 }
 
-// WithHTTPClient は HTTP クライアントを差し替える（テスト用）。
-func WithHTTPClient(client *http.Client) Option {
-	return func(c *Connector) { c.client = client }
+// WithTransport は HTTP の往路だけを差し替える（テスト用）。
+//
+// *http.Client ごと差し替えないのは、それだと oauth2.NewClient のラップまで消え、
+// 本番から誤って渡したときに Authorization ヘッダの無い素のクライアントで
+// Gmail を叩いてしまうため。Transport だけを差し替えれば認証は必ず経由する。
+func WithTransport(rt http.RoundTripper) Option {
+	return func(c *Connector) { c.transport = rt }
 }
 
 // New は Gmail コネクタを返す。
@@ -95,35 +101,62 @@ func New(name string, senders []string, newerThan string, maxResults int, ts oau
 func (c *Connector) Name() string { return c.name }
 
 // Fetch は送信元を絞って案件メールを取得する。
+//
+// 1通の取得に失敗しても残りは処理を続ける（architecture §6「1件の解析に失敗しても
+// そのソースの他の案件は処理を続ける」）。1通の欠損で取得済みの案件まで捨てると、
+// たまたま壊れたメールが1通あるだけでその日の収集が丸ごと無音になる。
+// 全通が失敗した場合だけ、ソースの失敗としてエラーを返す。
 func (c *Connector) Fetch(ctx context.Context) ([]model.RawJob, error) {
-	client := c.httpClient(ctx)
+	client, err := c.httpClient(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	ids, err := c.listMessageIDs(ctx, client)
 	if err != nil {
 		return nil, err
 	}
 
-	jobs := make([]model.RawJob, 0, len(ids))
+	var (
+		jobs     = make([]model.RawJob, 0, len(ids))
+		firstErr error
+		failed   int
+	)
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("gmail fetch canceled: %w", err)
+			return nil, fmt.Errorf("%w: canceled: %w", ErrFetch, err)
 		}
 		msg, err := c.getMessage(ctx, client, id)
 		if err != nil {
-			return nil, err
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		jobs = append(jobs, c.toRawJob(msg))
+	}
+
+	// 1通も取れなかったのに ID は引けている場合、認証切れやレート制限など
+	// ソース全体の問題である可能性が高い。黙って0件成功にしない。
+	if len(ids) > 0 && failed == len(ids) {
+		return nil, fmt.Errorf("%w: all %d messages failed: %w", ErrFetch, failed, firstErr)
 	}
 	return jobs, nil
 }
 
-func (c *Connector) httpClient(ctx context.Context) *http.Client {
-	if c.client != nil {
-		return c.client
+// httpClient は必ず oauth2 のラップを通したクライアントを返す。
+// Transport の差し替え（テスト）を挟んでも Authorization の付与は迂回できない。
+func (c *Connector) httpClient(ctx context.Context) (*http.Client, error) {
+	if c.tokenSource == nil {
+		return nil, fmt.Errorf("%w: token source is not configured", ErrFetch)
 	}
+	base := &http.Client{Transport: c.transport}
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, base)
+
 	client := oauth2.NewClient(ctx, c.tokenSource)
 	client.Timeout = defaultTimeout
-	return client
+	return client, nil
 }
 
 // query は送信元ホワイトリストで検索クエリを組む。
@@ -149,7 +182,7 @@ func (c *Connector) listMessageIDs(ctx context.Context, client *http.Client) ([]
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("gmail fetch canceled: %w", err)
+			return nil, fmt.Errorf("%w: canceled: %w", ErrFetch, err)
 		}
 
 		remaining := c.maxResults - len(ids)
@@ -171,7 +204,12 @@ func (c *Connector) listMessageIDs(ctx context.Context, client *http.Client) ([]
 			return nil, err
 		}
 
+		// maxResults はサーバーへも渡すが、返ってきた件数でも切る。
+		// API が上限を超えて返しても取得が膨らまないようにする。
 		for _, m := range res.Messages {
+			if len(ids) >= c.maxResults {
+				break
+			}
 			ids = append(ids, m.ID)
 		}
 		if res.NextPageToken == "" || len(res.Messages) == 0 {
@@ -223,7 +261,9 @@ func (c *Connector) getJSON(ctx context.Context, client *http.Client, endpoint s
 		return fmt.Errorf("%w: status %d", ErrFetch, resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	// 上限を課すのは、壊れた応答や巨大な添付を含むメールでメモリを際限なく
+	// 食わないため。Gmail のメッセージ1通の上限（25MB）に少し余裕を持たせる。
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return fmt.Errorf("%w: failed to read response", ErrFetch)
 	}

@@ -60,7 +60,7 @@ func runAuthGmail(ctx context.Context, out io.Writer) error {
 	// 衝突したときに原因が分かりにくい。
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return fmt.Errorf("%w: failed to open local port: %v", ErrAuthFailed, err)
+		return fmt.Errorf("%w: failed to open local port: %w", ErrAuthFailed, err)
 	}
 	defer func() { _ = listener.Close() }()
 
@@ -102,8 +102,14 @@ func runAuthGmail(ctx context.Context, out io.Writer) error {
 
 	token, err := cfg.Exchange(ctx, code)
 	if err != nil {
-		// 原因を載せないのは、oauth2 のエラーが認可コードやクライアント
-		// シークレットを反射することがあるため。
+		// エラー全体を載せないのは、oauth2 の *RetrieveError が
+		// リクエストボディ（認可コード・クライアントシークレット）を含むため。
+		// 原因の切り分けに要るエラーコード（invalid_grant など）だけを残す。
+		var re *oauth2.RetrieveError
+		if errors.As(err, &re) && re.ErrorCode != "" {
+			return fmt.Errorf("%w: failed to exchange authorization code (%s)",
+				ErrAuthFailed, re.ErrorCode)
+		}
 		return fmt.Errorf("%w: failed to exchange authorization code", ErrAuthFailed)
 	}
 	if token.RefreshToken == "" {

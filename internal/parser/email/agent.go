@@ -18,15 +18,27 @@ const (
 // 送信元で分岐するのは、実エージェントのメール書式が互いに異なり、共通の
 // 「ラベル: 値」規則へ寄せられないため。クラウドテックはラベルの次の行が値で、
 // フォスターネットは同じ行に値が続く。
+//
+// **案件名すら取れなかった場合も ok=false を返す**（送信元は一致していても）。
+// エージェントがメールの書式を変えたとき、空の Fields をそのまま通すと
+// 中身のない JobPosting が無音で積み上がり、通知が止まったことにしか気づけない。
+// fixture 形式の Parse へフォールバックさせ、それでも取れなければ件名が題名として残る。
 func Extract(sender, body string) (parser.Fields, bool) {
+	var fields parser.Fields
+
 	switch {
 	case strings.Contains(sender, domainCrowdTech):
-		return extractCrowdTech(body), true
+		fields = extractCrowdTech(body)
 	case strings.Contains(sender, domainFosterNet):
-		return extractFosterNet(body), true
+		fields = extractFosterNet(body)
 	default:
 		return nil, false
 	}
+
+	if fields[parser.FieldTitle] == "" {
+		return nil, false
+	}
+	return fields, true
 }
 
 // extractCrowdTech はクラウドワークス テックの提携企業案件メールを解釈する。
@@ -68,6 +80,13 @@ func extractCrowdTech(body string) parser.Fields {
 			if v, ok := nextNonEmpty(lines, i); ok {
 				setOnce(f, parser.FieldSummary, v)
 			}
+		}
+
+		// エントリー用の URL。全案件で共通のフォームだが、通知に応募導線が
+		// 無いと利用者が案件 ID を手で探す羽目になる。dedup_key は案件 ID を
+		// 優先するため（parser.DedupKey）、共通 URL を載せても重複判定は壊れない。
+		if strings.HasPrefix(head, "https://") {
+			setOnce(f, parser.FieldURL, head)
 		}
 	}
 

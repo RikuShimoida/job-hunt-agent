@@ -71,7 +71,7 @@ make run-dry
 # 1. Google Cloud Console でプロジェクトを作り、Gmail API を有効化する
 # 2. OAuth クライアント ID（種類: デスクトップアプリ）を発行し、.env に設定する
 #      GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
-# 3. リフレッシュトークンを取得して .env に貼る
+# 3. リフレッシュトークンを取得して .env に貼る（表示された URL をブラウザで開いて認可する）
 go run ./cmd/job-hunt-agent auth gmail
 
 # 4. config/sources.yaml の gmail ソースを enabled: true にする

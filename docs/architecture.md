@@ -205,7 +205,7 @@ cli → bootstrap → application → domain/port → domain/model
 | コマンド | 説明 |
 |---|---|
 | `init` | `config/*.example.yaml` と `.env.example` から実設定を生成（**既存ファイルは上書きしない**） |
-| `auth gmail` | Gmail の読み取り専用トークンを取得する（ブラウザで認可 → リフレッシュトークンを表示） |
+| `auth gmail` | Gmail の読み取り専用トークンを取得する（認可 URL を表示 → 認可後リフレッシュトークンを表示） |
 | `profile validate` | プロフィール設定を検証する |
 | `collect [--source <name>]` | 有効なソースから案件を収集して保存する |
 | `score` | 保存済み案件を再評価する |
@@ -360,7 +360,6 @@ type ErrorNotifier interface {
 | 2026-07-13 | `ExtractSkills` は出現順で返す（並び順を決定的にする） | map の反復順のまま返す | `MaterialChanges` / `MaterialHash` は比較前に `slices.Sort` するため**再通知は起きない**が、`required_skills` はそのまま DB へ保存され通知本文にも出る。順序が揺れると内容が同じ案件でも収集のたびに UPDATE が走り、本文の表示順も安定しない |
 | 2026-07-13 | `payload_hash` の導出（`model.MaterialHash`）と**スナップショットの生成（`message.Snapshot`）**は当面 Notifier アダプタ側に置く | `port.NotifyItem` に `PayloadHash` を持たせて `application` が詰める / `Notifier` は送否だけ返し `application` が `model.Notification` を組み立てる | 再通知の判定基準はユースケースの責務であり、層としては `application` 側が素直。ただし現状 Notifier は `slack` / `stdout` の2実装で壊れておらず、動く構造を組み替える価値が今はない。**Notifier が増える Phase 3 で再検討する**（実装が散ると片方だけ古い定義を使う事故が起きうる）。判定（`MaterialHash`・domain）と表示（`Snapshot`・adapter）が対で使われるのに層が割れている点も、この再検討に含める |
 | 2026-07-13 | 正規化は「出社0日」を `(full_remote, nil)` へ寄せる（`OnsiteDays` に 0 を残さない） | 「週0日出社」を `(full_remote, &0)` として出社日数を保持する（現状維持） | 同じ「フルリモート」が `(full_remote, nil)` と `(full_remote, &0)` の2通りで表現でき、`model.materialRemote`（ハッシュの入力）は出社日数まで見て両者を別物と扱うのに、`message.formatRemote`（表示）はフルリモートなら出社日数を捨てる。結果、ソース側の表記が「フルリモート」↔「週0日出社」で揺れただけで再通知が起き、しかも差分行が出ないため**見出し以外まったく同じ通知**が届く。正規化の時点で表現を1本化すれば、ハッシュ側・表示側のどちらも触らずに解消する（`MaterialHash` の golden 値も変わらない）。不変条件「ハッシュが変わるなら必ず差分を1行以上出せる」は `message` のプロパティテスト（`TestUpdateAlwaysExplainsItself`）で総当たり検証する |
-
 | 2026-07-13 | Gmail は `golang.org/x/oauth2` + 標準 `net/http` で REST を直接叩く | `google.golang.org/api/gmail/v1` の導入 | 使うのは `messages.list` と `messages.get` の2エンドポイントだけであり、grpc を含む重い依存ツリーを引き込む対価に見合わない（`slack-go/slack` を却下して Webhook を `net/http` で叩いたのと同じ論理）。トークンの更新だけは自前実装が無意味なので `oauth2` に任せる。`golang.org/x/oauth2/google` すら使わない（GCE メタデータサーバー検出のため `cloud.google.com/go/compute/metadata` を引き込む。必要なのは URL 2本だけなので `gmail.Endpoint` として自前で持つ） |
 | 2026-07-13 | `dedup_key` に `id:<ソース名>:<案件ID>` 形式を足し、**URL より優先する** | `url:` / `hash:` の2択のまま（現状維持） | クラウドテックは案件詳細 URL を持たず、エントリー先が**全案件で共通の HubSpot フォーム URL**。これを鍵にすると全案件が同一 `dedup_key` になり、「衝突したら既存行を更新する」仕様により**先に保存した案件が次の案件で上書きされて消える**（1日3〜5件届くソースで、DB に1件しか残らない）。`hash:` へ倒す案もあるが、本文が1文字でも変われば別案件になり再通知が止まらない。案件 ID にソース名を混ぜるのは、別ソースが同じ ID 体系（連番など）を使ったときの衝突を避けるため |
 | 2026-07-13 | Gmail の検索は**送信元アドレスのホワイトリスト**で組む（`from:(A OR B) newer_than:Nd`） | `案件` `単価` などのキーワード検索 / ラベルでの絞り込み | 実受信箱をキーワードで検索すると、マイナビ転職の正社員求人・タウンワークのアルバイト求人・ビズリーチのスカウトが大量にヒットし、フリーランス案件が埋もれる（実測）。ラベルは利用者の手作業に依存し、設定漏れで無音になる |
@@ -540,8 +539,10 @@ Webhook URL がログと DB に残る。
 2. OAuth クライアント ID（種類: **デスクトップアプリ**）を発行し、
    `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` を `.env` へ設定する
 3. `job-hunt-agent auth gmail` を実行する
-   - ローカルの空きポートで待受け、ブラウザで認可画面を開く
-   - 認可後、リフレッシュトークンを標準出力へ表示する → `GOOGLE_REFRESH_TOKEN` へ貼る
+   - ローカルの空きポートで待受け、**認可 URL を標準出力へ表示する**（ブラウザは自動で開かない。
+     SSH 越しやコンテナ内で実行しても手順が変わらないようにするため）
+   - 表示された URL をブラウザで開いて認可すると、リフレッシュトークンが標準出力へ出る
+     → `GOOGLE_REFRESH_TOKEN` へ貼る
 4. `config/sources.yaml` の `gmail` ソースを `enabled: true` にする
 
 `AccessTypeOffline` + `ApprovalForce` を付けているのは、これが無いと2回目以降の認可で

@@ -35,6 +35,13 @@ type Options struct {
 	SourceFilter string
 	// DryRun が true なら Slack へ送らず、送信予定の内容を Out へ書く。
 	DryRun bool
+	// NeedsConnectors が true のときだけコネクタを組み立てる（collect / run）。
+	//
+	// score / notify でも組み立てると、gmail ソースを有効にしているだけで
+	// これらのコマンドまで ErrMissingGoogleCredentials で起動時に停止する。
+	// リフレッシュトークンが失効したとき、Gmail に一切触らない notify の再送経路まで
+	// 巻き添えで止まってしまう（collect / score が SLACK_WEBHOOK_URL を要求しないのと同じ非対称）。
+	NeedsConnectors bool
 	// Out は通知の出力先。
 	Out io.Writer
 	// LogOut はログの出力先。
@@ -84,9 +91,12 @@ func New(ctx context.Context, opts Options) (*App, error) {
 		return nil, err
 	}
 
-	connectors, err := buildConnectors(ctx, targets, env)
-	if err != nil {
-		return nil, err
+	var connectors []port.Connector
+	if opts.NeedsConnectors {
+		connectors, err = buildConnectors(ctx, targets, env)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 通知先の確定を DB より先に置く。Webhook 未設定で停止するなら、

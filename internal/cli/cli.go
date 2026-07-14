@@ -130,7 +130,7 @@ func newCollectCommand(g *globalFlags) *cobra.Command {
 		Use:   "collect",
 		Short: "有効なソースから案件を収集する",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			app, err := newApp(cmd, g, source, true)
+			app, err := newApp(cmd, g, source, true, true)
 			if err != nil {
 				return err
 			}
@@ -156,7 +156,7 @@ func newScoreCommand(g *globalFlags) *cobra.Command {
 		Use:   "score",
 		Short: "保存済み案件を再評価する",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			app, err := newApp(cmd, g, "", true)
+			app, err := newApp(cmd, g, "", true, false)
 			if err != nil {
 				return err
 			}
@@ -180,7 +180,7 @@ func newNotifyCommand(g *globalFlags) *cobra.Command {
 		Use:   "notify",
 		Short: "閾値以上かつ未通知の案件を Slack へ通知する",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			app, err := newApp(cmd, g, "", dryRun)
+			app, err := newApp(cmd, g, "", dryRun, false)
 			if err != nil {
 				return err
 			}
@@ -204,7 +204,7 @@ func newRunCommand(g *globalFlags) *cobra.Command {
 		Use:   "run",
 		Short: "収集・採点・通知を順に実行する",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			app, err := newApp(cmd, g, "", dryRun)
+			app, err := newApp(cmd, g, "", dryRun, true)
 			if err != nil {
 				return err
 			}
@@ -239,13 +239,18 @@ func reportNotify(out io.Writer, s application.NotifySummary) error {
 
 // newApp を collect / score が dryRun=true で呼ぶのは、この2つが案件通知を行わないため。
 // 実送信として組み立てると、通知しないコマンドまで SLACK_WEBHOOK_URL 必須になる。
-func newApp(cmd *cobra.Command, g *globalFlags, source string, dryRun bool) (*bootstrap.App, error) {
+//
+// 同じ理由で needsConnectors は収集を行う collect / run だけ true にする。
+// score / notify までコネクタを組み立てると、gmail ソースを有効にしているだけで
+// これらのコマンドが資格情報を要求し、トークン失効時に再送経路まで止まる。
+func newApp(cmd *cobra.Command, g *globalFlags, source string, dryRun, needsConnectors bool) (*bootstrap.App, error) {
 	return bootstrap.New(cmd.Context(), bootstrap.Options{
-		ProfilePath:  g.profilePath,
-		SourcesPath:  g.sourcesPath,
-		SourceFilter: source,
-		DryRun:       dryRun,
-		Out:          cmd.OutOrStdout(),
-		LogOut:       cmd.ErrOrStderr(),
+		ProfilePath:     g.profilePath,
+		SourcesPath:     g.sourcesPath,
+		SourceFilter:    source,
+		DryRun:          dryRun,
+		NeedsConnectors: needsConnectors,
+		Out:             cmd.OutOrStdout(),
+		LogOut:          cmd.ErrOrStderr(),
 	})
 }

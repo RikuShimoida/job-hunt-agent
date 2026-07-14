@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -207,13 +209,44 @@ func ValidateSources(s Sources) error {
 				return fmt.Errorf("%w: source %q requires path", model.ErrInvalidSource, src.Name)
 			}
 		case SourceTypeGmail:
-			if len(src.Senders) == 0 {
-				return fmt.Errorf("%w: source %q requires senders", model.ErrInvalidSource, src.Name)
+			if err := validateGmailSource(src); err != nil {
+				return err
 			}
 		default:
 			return fmt.Errorf("%w: source %q has unsupported type %q",
 				model.ErrInvalidSource, src.Name, src.Type)
 		}
+	}
+	return nil
+}
+
+// gmailNewerThanRe は Gmail の newer_than が受け付ける形式（1d / 2w / 3m / 1y）。
+var gmailNewerThanRe = regexp.MustCompile(`^[1-9][0-9]*[dwmy]$`)
+
+// validateGmailSource は gmail ソース固有の設定を検証する。
+//
+// 形式の誤りを起動時に弾くのは、Gmail が不正なクエリをエラーにせず
+// **0件で返す**ため。`newer_than: 30days` と書き間違えると、収集は成功扱いのまま
+// 案件が1件も取れず、無音の原因を追うのが難しくなる。
+func validateGmailSource(src Source) error {
+	senders := 0
+	for _, s := range src.Senders {
+		if strings.TrimSpace(s) == "" {
+			return fmt.Errorf("%w: source %q has an empty sender", model.ErrInvalidSource, src.Name)
+		}
+		senders++
+	}
+	if senders == 0 {
+		return fmt.Errorf("%w: source %q requires senders", model.ErrInvalidSource, src.Name)
+	}
+
+	if src.NewerThan != "" && !gmailNewerThanRe.MatchString(src.NewerThan) {
+		return fmt.Errorf("%w: source %q has invalid newer_than %q (例: 30d / 2w / 3m / 1y)",
+			model.ErrInvalidSource, src.Name, src.NewerThan)
+	}
+	if src.MaxResults < 0 {
+		return fmt.Errorf("%w: source %q has negative max_results (%d)",
+			model.ErrInvalidSource, src.Name, src.MaxResults)
 	}
 	return nil
 }
