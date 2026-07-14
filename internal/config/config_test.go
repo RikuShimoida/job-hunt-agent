@@ -248,7 +248,52 @@ func TestValidateSources(t *testing.T) {
 		{
 			name: "未対応の type なら不正",
 			sources: config.Sources{Sources: []config.Source{
-				{Name: "gmail", Type: "gmail", Path: "x"},
+				{Name: "web", Type: "web_scraper", Path: "x"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "gmail は path を持たなくてよい",
+			sources: config.Sources{Sources: []config.Source{
+				{Name: "gmail-agents", Type: config.SourceTypeGmail, Senders: []string{"a@example.test"}},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "gmail に senders が無ければ不正",
+			sources: config.Sources{Sources: []config.Source{
+				{Name: "gmail-agents", Type: config.SourceTypeGmail},
+			}},
+			wantErr: true,
+		},
+		{
+			// 空の sender は from:() という壊れたクエリになり、Gmail は
+			// エラーにせず0件で返す。起動時に弾く。
+			name: "gmail の senders に空要素があれば不正",
+			sources: config.Sources{Sources: []config.Source{
+				{Name: "gmail-agents", Type: config.SourceTypeGmail, Senders: []string{"a@example.test", "  "}},
+			}},
+			wantErr: true,
+		},
+		{
+			// 「30days」のような誤記も Gmail は0件で返すだけで気づけない。
+			name: "gmail の newer_than が不正な形式なら不正",
+			sources: config.Sources{Sources: []config.Source{
+				{Name: "gmail-agents", Type: config.SourceTypeGmail, Senders: []string{"a@example.test"}, NewerThan: "30days"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "gmail の newer_than が正しい形式なら妥当",
+			sources: config.Sources{Sources: []config.Source{
+				{Name: "gmail-agents", Type: config.SourceTypeGmail, Senders: []string{"a@example.test"}, NewerThan: "2w"},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "gmail の max_results が負なら不正",
+			sources: config.Sources{Sources: []config.Source{
+				{Name: "gmail-agents", Type: config.SourceTypeGmail, Senders: []string{"a@example.test"}, MaxResults: -1},
 			}},
 			wantErr: true,
 		},

@@ -11,9 +11,12 @@ import (
 	"log/slog"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/RikuShimoida/job-hunt-agent/internal/application"
 	"github.com/RikuShimoida/job-hunt-agent/internal/config"
 	"github.com/RikuShimoida/job-hunt-agent/internal/connector/fixture"
+	"github.com/RikuShimoida/job-hunt-agent/internal/connector/gmail"
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/model"
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/port"
 	"github.com/RikuShimoida/job-hunt-agent/internal/notifier/noop"
@@ -32,6 +35,13 @@ type Options struct {
 	SourceFilter string
 	// DryRun が true なら Slack へ送らず、送信予定の内容を Out へ書く。
 	DryRun bool
+	// NeedsConnectors が true のときだけコネクタを組み立てる（collect / run）。
+	//
+	// score / notify でも組み立てると、gmail ソースを有効にしているだけで
+	// これらのコマンドまで ErrMissingGoogleCredentials で起動時に停止する。
+	// リフレッシュトークンが失効したとき、Gmail に一切触らない notify の再送経路まで
+	// 巻き添えで止まってしまう（collect / score が SLACK_WEBHOOK_URL を要求しないのと同じ非対称）。
+	NeedsConnectors bool
 	// Out は通知の出力先。
 	Out io.Writer
 	// LogOut はログの出力先。
@@ -81,9 +91,12 @@ func New(ctx context.Context, opts Options) (*App, error) {
 		return nil, err
 	}
 
-	connectors, err := buildConnectors(targets)
-	if err != nil {
-		return nil, err
+	var connectors []port.Connector
+	if opts.NeedsConnectors {
+		connectors, err = buildConnectors(ctx, targets, env)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 通知先の確定を DB より先に置く。Webhook 未設定で停止するなら、
@@ -147,7 +160,12 @@ func selectSources(sources config.Sources, filter string) ([]config.Source, erro
 	return []config.Source{src}, nil
 }
 
-func buildConnectors(sources []config.Source) ([]port.Connector, error) {
+// buildConnectors はソース設定からコネクタを組み立てる。
+//
+// GOOGLE_* 未設定で gmail ソースが有効なら起動時に停止する。黙って0件成功にすると
+// 「収集したつもりで1件も取れていない」事故になるため（SLACK_WEBHOOK_URL 未設定で
+// 停止するのと同じ方針）。
+func buildConnectors(ctx context.Context, sources []config.Source, env config.Env) ([]port.Connector, error) {
 	connectors := make([]port.Connector, 0, len(sources))
 	for _, s := range sources {
 		switch s.Type {
@@ -155,10 +173,34 @@ func buildConnectors(sources []config.Source) ([]port.Connector, error) {
 			connectors = append(connectors, fixture.NewEmail(s.Name, s.Path))
 		case config.SourceTypeFixtureHTML:
 			connectors = append(connectors, fixture.NewHTML(s.Name, s.Path))
+		case config.SourceTypeGmail:
+			if !env.HasGoogleCredentials() {
+				return nil, fmt.Errorf("%w: source %q requires GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN",
+					model.ErrMissingGoogleCredentials, s.Name)
+			}
+			connectors = append(connectors, gmail.New(
+				s.Name,
+				s.Senders,
+				s.GmailNewerThan(),
+				s.GmailMaxResults(),
+				googleTokenSource(ctx, env),
+			))
 		default:
 			return nil, fmt.Errorf("%w: source %q has unsupported type %q",
 				model.ErrInvalidSource, s.Name, s.Type)
 		}
 	}
 	return connectors, nil
+}
+
+// googleTokenSource はリフレッシュトークンからアクセストークンを供給する。
+// TokenSource は自動で更新し、期限切れを呼び出し側が気にしなくて済む。
+func googleTokenSource(ctx context.Context, env config.Env) oauth2.TokenSource {
+	cfg := &oauth2.Config{
+		ClientID:     env.GoogleClientID,
+		ClientSecret: env.GoogleClientSecret,
+		Endpoint:     gmail.Endpoint,
+		Scopes:       []string{gmail.ScopeReadonly},
+	}
+	return cfg.TokenSource(ctx, &oauth2.Token{RefreshToken: env.GoogleRefreshToken})
 }

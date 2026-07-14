@@ -14,27 +14,47 @@ func TestDedupKey(t *testing.T) {
 
 	tests := []struct {
 		name        string
+		sourceName  string
+		jobID       string
 		sourceURL   string
 		contentHash string
 		want        string
 	}{
 		{
-			name:        "URL があれば URL を鍵にする",
+			name:        "案件 ID があれば URL より優先する",
+			sourceName:  "gmail-agents",
+			jobID:       "JA-086984",
+			sourceURL:   "https://share.hsforms.com/common-form",
+			contentHash: "abc123",
+			want:        "id:gmail-agents:JA-086984",
+		},
+		{
+			name:        "案件 ID が無ければ URL を鍵にする",
+			sourceName:  "fixture-email",
 			sourceURL:   "https://example.test/jobs/1",
 			contentHash: "abc123",
 			want:        "url:https://example.test/jobs/1",
 		},
 		{
-			name:        "URL が無ければ本文ハッシュを鍵にする",
-			sourceURL:   "",
+			name:        "案件 ID も URL も無ければ本文ハッシュを鍵にする",
+			sourceName:  "fixture-email",
 			contentHash: "abc123",
 			want:        "hash:abc123",
 		},
 		{
 			name:        "空白だけの URL は無いものとして扱う",
+			sourceName:  "fixture-email",
 			sourceURL:   "   ",
 			contentHash: "abc123",
 			want:        "hash:abc123",
+		},
+		{
+			name:        "空白だけの案件 ID は無いものとして扱う",
+			sourceName:  "gmail-agents",
+			jobID:       "  ",
+			sourceURL:   "https://example.test/jobs/1",
+			contentHash: "abc123",
+			want:        "url:https://example.test/jobs/1",
 		},
 	}
 
@@ -42,10 +62,33 @@ func TestDedupKey(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := parser.DedupKey(tt.sourceURL, tt.contentHash); got != tt.want {
+			got := parser.DedupKey(tt.sourceName, tt.jobID, tt.sourceURL, tt.contentHash)
+			if got != tt.want {
 				t.Errorf("DedupKey() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestDedupKeyDistinguishesJobsSharingEntryURL は、クラウドテックのように案件詳細 URL を
+// 持たず、エントリー先が全案件で共通のフォーム URL になるソースでも、案件が別物として
+// 扱われることを固定する。
+//
+// 共通 URL を鍵にすると全案件が同一 dedup_key になり、SaveJob の「衝突したら既存行を
+// 更新する」仕様で先に保存した案件が上書きされて消える。
+func TestDedupKeyDistinguishesJobsSharingEntryURL(t *testing.T) {
+	t.Parallel()
+
+	const (
+		source   = "gmail-agents"
+		entryURL = "https://share.hsforms.com/17eqhHdqwTQKdkppzKjuNeQnj3y8"
+	)
+
+	first := parser.DedupKey(source, "JA-086984", entryURL, "hash-a")
+	second := parser.DedupKey(source, "JA-086992", entryURL, "hash-b")
+
+	if first == second {
+		t.Fatalf("共通のエントリー URL を持つ別案件が同じ dedup_key になった: %q", first)
 	}
 }
 

@@ -67,8 +67,10 @@ func newAppWithSources(t *testing.T, status string, dryRun bool, sourcesPath str
 		ProfilePath: profilePath,
 		SourcesPath: sourcesPath,
 		DryRun:      dryRun,
-		Out:         out,
-		LogOut:      logOut,
+		// この IT は収集を含むパイプライン（run 相当）を検証するため、コネクタを要求する。
+		NeedsConnectors: true,
+		Out:             out,
+		LogOut:          logOut,
 	})
 	if err != nil {
 		t.Fatalf("bootstrap.New() returned error: %v", err)

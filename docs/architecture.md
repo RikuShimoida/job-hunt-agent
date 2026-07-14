@@ -48,7 +48,7 @@ CLI（単一バイナリ）。定期実行は GitHub Actions の schedule また
 | 0 | リポジトリ初期化（Go Modules / Cobra / lint / CI / Makefile） | **完了** |
 | 1 | 外部サービスなしの縦切り MVP（fixture → 正規化 → SQLite → 採点 → dry-run 通知） | **完了** |
 | 2 | Slack Incoming Webhook 接続と通知済み管理 | **完了** |
-| 3 | Gmail 読み取り専用 OAuth と案件メール解析 | 未着手 |
+| 3 | Gmail 読み取り専用 OAuth と案件メール解析（クラウドテック / フォスターネット） | **完了** |
 | 4 | 公開 Web コネクタ（実装前に公開取得の可否と利用条件を確認する） | 未着手 |
 | 5 | 類似度ベースの重複排除・リトライ・構造変更検知・実行履歴強化・`status` サブコマンド | 未着手 |
 | 6 | 案件ソースの追加、抽出精度とスコア重みの実データ改善 | 未着手 |
@@ -80,9 +80,9 @@ CLI（単一バイナリ）。定期実行は GitHub Actions の schedule また
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`。未知の値は `info` として扱う |
 | `SLACK_WEBHOOK_URL` | — | 案件通知の送信先。`--dry-run` なしの `notify` / `run` で**必須**。未設定なら `model.ErrMissingWebhookURL` で起動時に停止する（標準出力へフォールバックしない） |
 | `SLACK_ERROR_WEBHOOK_URL` | — | ソース取得失敗の送信先。**任意**。未設定ならエラーは Slack へ送らず構造化ログにのみ残す（正常系） |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REFRESH_TOKEN` | — | Phase 3 以降。Phase 2 では未使用 |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REFRESH_TOKEN` | — | Gmail の読み取りに使う。`sources.yaml` の `gmail` ソースが有効なら**3つとも必須**。1つでも欠けると `model.ErrMissingGoogleCredentials` で起動時に停止する。リフレッシュトークンは `job-hunt-agent auth gmail` で取得する（§10） |
 
-Webhook URL は**ログにも DB にも出力しない**（§9）。
+Webhook URL は**ログにも DB にも出力しない**（§9）。Gmail の検索クエリ（監視対象の送信元アドレス）も同様（§10）。
 
 ## 3. パッケージ構成
 
@@ -96,9 +96,11 @@ internal/
     model/              エンティティと列挙型、センチネルエラー
     port/               application が外界へ出るための契約（interface）
   application/          ユースケース（collect / score / notify / run_pipeline）
-  connector/fixture/    testdata から読むコネクタ（port.Connector の実装）
+  connector/
+    fixture/            testdata から読むコネクタ（port.Connector の実装）
+    gmail/              Gmail から読むコネクタ（読み取り専用。port.Connector の実装）
   parser/               抽出項目 → JobPosting の組み立て（正規化・重複キー生成）
-    email/              メール本文からの項目抽出
+    email/              メール本文からの項目抽出（fixture 形式 + 送信元別 extractor）
     html/               HTML からの項目抽出
   normalization/        単価・稼働・リモート・スキルの正規化
   deduplication/        収集バッチ内の重複統合
@@ -160,9 +162,16 @@ cli → bootstrap → application → domain/port → domain/model
 ### 重複判定
 
 `JobPosting.DedupKey` の完全一致のみで判定し、SQLite の UNIQUE 制約で担保する。
+次の順で決める。
 
-- `SourceURL` があれば `url:<URL>`
-- 無ければ `hash:<ContentHash>`（案件名 + 企業名 + 本文の SHA-256）
+1. ソースが案件 ID を持つなら `id:<ソース名>:<案件ID>`（クラウドテックの `JA-086984` など）
+2. `SourceURL` があれば `url:<URL>`
+3. 無ければ `hash:<ContentHash>`（案件名 + 企業名 + 本文の SHA-256）
+
+**案件 ID を URL より優先する**のは、クラウドテックが案件詳細 URL を持たず、
+エントリー先が全案件で共通の HubSpot フォーム URL になるため。共通 URL を鍵にすると
+全案件が同一 `dedup_key` になり、「衝突したら既存行を更新する」仕様により
+**先に保存した案件が次の案件で上書きされて消える**（§7 の ADR）。
 
 判定キーを1本に絞ることで、重複判定を DB の制約だけで完結させている。
 案件名・単価・本文類似度による判定は Phase 5。
@@ -196,6 +205,7 @@ cli → bootstrap → application → domain/port → domain/model
 | コマンド | 説明 |
 |---|---|
 | `init` | `config/*.example.yaml` と `.env.example` から実設定を生成（**既存ファイルは上書きしない**） |
+| `auth gmail` | Gmail の読み取り専用トークンを取得する（認可 URL を表示 → 認可後リフレッシュトークンを表示） |
 | `profile validate` | プロフィール設定を検証する |
 | `collect [--source <name>]` | 有効なソースから案件を収集して保存する |
 | `score` | 保存済み案件を再評価する |
@@ -279,8 +289,11 @@ type ErrorNotifier interface {
 | `model.ErrInvalidSource` | `internal/domain/model` | ソース設定が不正 |
 | `model.ErrUnknownSource` | `internal/domain/model` | 指定されたソースが設定に存在しない |
 | `model.ErrMissingWebhookURL` | `internal/domain/model` | 実送信に必要な Webhook URL が未設定 |
+| `model.ErrMissingGoogleCredentials` | `internal/domain/model` | `gmail` ソースが有効なのに `GOOGLE_*` が揃っていない |
 | `slack.ErrSend` | `internal/notifier/slack` | Slack への送信が失敗した |
+| `gmail.ErrFetch` | `internal/connector/gmail` | Gmail からの取得が失敗した |
 | `cli.ErrNotifyFailed` | `internal/cli` | 通知の一部または全部を送信できなかった（`notify` / `run` を非ゼロ終了させる） |
+| `cli.ErrAuthFailed` | `internal/cli` | `auth gmail` の初回認証が完了しなかった |
 
 すべて `fmt.Errorf("...: %w", err)` でラップし、`errors.Is` で判別できる状態を保つ。
 
@@ -347,6 +360,11 @@ type ErrorNotifier interface {
 | 2026-07-13 | `ExtractSkills` は出現順で返す（並び順を決定的にする） | map の反復順のまま返す | `MaterialChanges` / `MaterialHash` は比較前に `slices.Sort` するため**再通知は起きない**が、`required_skills` はそのまま DB へ保存され通知本文にも出る。順序が揺れると内容が同じ案件でも収集のたびに UPDATE が走り、本文の表示順も安定しない |
 | 2026-07-13 | `payload_hash` の導出（`model.MaterialHash`）と**スナップショットの生成（`message.Snapshot`）**は当面 Notifier アダプタ側に置く | `port.NotifyItem` に `PayloadHash` を持たせて `application` が詰める / `Notifier` は送否だけ返し `application` が `model.Notification` を組み立てる | 再通知の判定基準はユースケースの責務であり、層としては `application` 側が素直。ただし現状 Notifier は `slack` / `stdout` の2実装で壊れておらず、動く構造を組み替える価値が今はない。**Notifier が増える Phase 3 で再検討する**（実装が散ると片方だけ古い定義を使う事故が起きうる）。判定（`MaterialHash`・domain）と表示（`Snapshot`・adapter）が対で使われるのに層が割れている点も、この再検討に含める |
 | 2026-07-13 | 正規化は「出社0日」を `(full_remote, nil)` へ寄せる（`OnsiteDays` に 0 を残さない） | 「週0日出社」を `(full_remote, &0)` として出社日数を保持する（現状維持） | 同じ「フルリモート」が `(full_remote, nil)` と `(full_remote, &0)` の2通りで表現でき、`model.materialRemote`（ハッシュの入力）は出社日数まで見て両者を別物と扱うのに、`message.formatRemote`（表示）はフルリモートなら出社日数を捨てる。結果、ソース側の表記が「フルリモート」↔「週0日出社」で揺れただけで再通知が起き、しかも差分行が出ないため**見出し以外まったく同じ通知**が届く。正規化の時点で表現を1本化すれば、ハッシュ側・表示側のどちらも触らずに解消する（`MaterialHash` の golden 値も変わらない）。不変条件「ハッシュが変わるなら必ず差分を1行以上出せる」は `message` のプロパティテスト（`TestUpdateAlwaysExplainsItself`）で総当たり検証する |
+| 2026-07-13 | Gmail は `golang.org/x/oauth2` + 標準 `net/http` で REST を直接叩く | `google.golang.org/api/gmail/v1` の導入 | 使うのは `messages.list` と `messages.get` の2エンドポイントだけであり、grpc を含む重い依存ツリーを引き込む対価に見合わない（`slack-go/slack` を却下して Webhook を `net/http` で叩いたのと同じ論理）。トークンの更新だけは自前実装が無意味なので `oauth2` に任せる。`golang.org/x/oauth2/google` すら使わない（GCE メタデータサーバー検出のため `cloud.google.com/go/compute/metadata` を引き込む。必要なのは URL 2本だけなので `gmail.Endpoint` として自前で持つ） |
+| 2026-07-13 | `dedup_key` に `id:<ソース名>:<案件ID>` 形式を足し、**URL より優先する** | `url:` / `hash:` の2択のまま（現状維持） | クラウドテックは案件詳細 URL を持たず、エントリー先が**全案件で共通の HubSpot フォーム URL**。これを鍵にすると全案件が同一 `dedup_key` になり、「衝突したら既存行を更新する」仕様により**先に保存した案件が次の案件で上書きされて消える**（1日3〜5件届くソースで、DB に1件しか残らない）。`hash:` へ倒す案もあるが、本文が1文字でも変われば別案件になり再通知が止まらない。案件 ID にソース名を混ぜるのは、別ソースが同じ ID 体系（連番など）を使ったときの衝突を避けるため |
+| 2026-07-13 | Gmail の検索は**送信元アドレスのホワイトリスト**で組む（`from:(A OR B) newer_than:Nd`） | `案件` `単価` などのキーワード検索 / ラベルでの絞り込み | 実受信箱をキーワードで検索すると、マイナビ転職の正社員求人・タウンワークのアルバイト求人・ビズリーチのスカウトが大量にヒットし、フリーランス案件が埋もれる（実測）。ラベルは利用者の手作業に依存し、設定漏れで無音になる |
+| 2026-07-13 | Phase 3 の対象を**クラウドテックとフォスターネットの2社に絞る** | 案件メールを送る5社すべてに対応する | 残る3社は採点に必要な情報を持たない。**Remogu** は本文に案件名・企業名・稼働形態しかなく単価もスキルも無い（採点不能。詳細は Web 取得が要るため Phase 4 の領分）。**フリーランスハブ**は1メールに1〜7案件を載せ、「1 RawJob = 1 JobPosting」というモデルの前提を壊す（別 Issue）。**ギークス**はイベント告知・営業メールのみで案件データを含まない |
+| 2026-07-13 | 送信元別の extractor を `internal/parser/email` 内で `RawJob.Sender` により振り分ける | 共通の「ラベル: 値」規則へ寄せる / コネクタ側でソースごとにパーサーを持つ | 実メールの書式は社ごとに異なり共通規則へ寄せられない（クラウドテックはラベルの**次の行**が値、フォスターネットは**同じ行**に値が続く。「稼動日数」のような異表記もある）。一方で抽出はメール本文の解釈であってコネクタ（取得）の責務ではなく、Gmail 以外の経路で同じメールが来ても同じ抽出が効くべき。fixture 形式の `Parse` は残し、対応する送信元だけ `Extract` が上書きする |
 
 ## 8. スコアリング
 
@@ -505,3 +523,80 @@ Incoming Webhook が概ね 1 msg/sec で、超過すると 429 を返すため�
 この経路を塞がないと、`collect_jobs.go` の `err.Error()` ロギングと
 `collection_runs.error_message` / `notifications.error_message` への永続化が受け皿になり、
 Webhook URL がログと DB に残る。
+
+---
+
+## 10. Gmail（Phase 3）
+
+### スコープと権限
+
+要求するのは **`gmail.readonly` のみ**。削除・アーカイブ・既読化・ラベル変更・返信は行わない
+（§1「やらないこと」）。
+
+### セットアップ
+
+1. Google Cloud Console でプロジェクトを作り、**Gmail API を有効化**する
+2. OAuth クライアント ID（種類: **デスクトップアプリ**）を発行し、
+   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` を `.env` へ設定する
+3. `job-hunt-agent auth gmail` を実行する
+   - ローカルの空きポートで待受け、**認可 URL を標準出力へ表示する**（ブラウザは自動で開かない。
+     SSH 越しやコンテナ内で実行しても手順が変わらないようにするため）
+   - 表示された URL をブラウザで開いて認可すると、リフレッシュトークンが標準出力へ出る
+     → `GOOGLE_REFRESH_TOKEN` へ貼る
+4. `config/sources.yaml` の `gmail` ソースを `enabled: true` にする
+
+`AccessTypeOffline` + `ApprovalForce` を付けているのは、これが無いと2回目以降の認可で
+Google が `refresh_token` を返さないため。CSRF 対策として `state` を照合する。
+
+### 取得
+
+| 項目 | 内容 |
+|---|---|
+| エンドポイント | `users.messages.list` → `users.messages.get`（標準 `net/http`） |
+| 検索クエリ | `from:(<senders を OR で連結>) newer_than:<newer_than>` |
+| 本文 | `payload.parts` から **text/plain を優先**（無ければ text/html）。base64url デコード |
+| 上限 | `max_results`（既定 100）。1ページ 100 件でページングする |
+| タイムアウト | 30 秒 |
+
+`RawJob` には `Format: "email"` / `Sender` / `ReceivedAt`（`internalDate`）/
+`ExternalID`（Gmail のメッセージ ID）を詰める。
+
+**送信元で絞る**のが要（§7 の ADR）。キーワード検索にすると転職サイトの求人メールが
+案件メールを圧倒する。
+
+### 対応するエージェント
+
+本文から採点に必要な項目（単価・稼働・リモート・スキル）を抽出できるのは現状この2社のみ。
+
+| | クラウドテック | フォスターネット |
+|---|---|---|
+| 送信元 | `alliance-crowdtech@crowdworks.co.jp` | `careers.desk.haishin@foster-net.co.jp` |
+| ラベル形式 | `■案件名` の**次の行**が値 | `■案件名：値`（同じ行） |
+| 単価 | `・金額：～￥850,000/月程度` | `■金額：～75万円(税抜)` |
+| 稼働 | `・稼働：5日 / フルリモート`（稼働とリモートが同居） | `■稼動日数：平日週5日`（「稼**動**」） |
+| リモート | `フルリモート` / `一部リモート` / `常駐` | `■場所：六本木駅 ※基本リモート（必要に応じて出社あり）` |
+| スキル | `≪必須経験・スキル≫` 配下の自然文 | `＜必須＞` 配下の自然文 |
+| 重複キー | `■案件ID：JA-086984` → `id:` | 案件掲載 URL → `url:` |
+
+対象外にした3社（Remogu / フリーランスハブ / ギークス）とその理由は §7 の ADR を参照。
+
+### 秘密情報の扱い
+
+**Gmail の検索クエリをログにも DB にも出力しない。**
+
+クエリには監視対象の送信元アドレスが載る。`net/http` の送信エラーは `*url.Error` で
+`Error()` がリクエスト URL 全体を含むため、`gmail` パッケージの出口で `errors.As` により
+原因だけを取り出して詰め替える（`slack` パッケージと同じ扱い）。HTTP エラーはステータスコードのみを返し、
+**レスポンスボディも出さない**（Google のエラーがリクエスト内容を反射することがある）。
+
+401 / 403 のときだけ「`auth gmail` でトークンを取り直す」旨をメッセージに含める
+（リフレッシュトークンの失効は運用中に必ず起きるため）。
+
+### 失敗時の扱い
+
+既存方針どおり、**Gmail が失敗しても他コネクタの収集は継続する**。失敗は `CollectionRun`
+（`status=failed`）とサマリに残り、`run`（`--dry-run` なし）ならエラー通知先へ送られる。
+
+`GOOGLE_*` が1つでも欠けた状態で `gmail` ソースが有効なら、`model.ErrMissingGoogleCredentials`
+で**起動時に停止する**。黙って0件成功にすると「収集したつもりで1件も取れていない」事故になる
+（`SLACK_WEBHOOK_URL` 未設定で停止するのと同じ方針）。

@@ -14,4 +14,7 @@ var (
 
 	// ErrMissingWebhookURL は実送信に必要な Webhook URL が未設定であることを示す。
 	ErrMissingWebhookURL = errors.New("missing webhook url")
+
+	// ErrMissingGoogleCredentials は Gmail の取得に必要な資格情報が未設定であることを示す。
+	ErrMissingGoogleCredentials = errors.New("missing google credentials")
 )

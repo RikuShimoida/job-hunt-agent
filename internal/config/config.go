@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -15,12 +17,18 @@ const (
 	defaultLogLevel    = "info"
 )
 
-// SourceType はコネクタの種別。Phase 1 では fixture のみ。
+// SourceType はコネクタの種別。
 type SourceType string
 
 const (
 	SourceTypeFixtureEmail SourceType = "fixture_email"
 	SourceTypeFixtureHTML  SourceType = "fixture_html"
+	SourceTypeGmail        SourceType = "gmail"
+)
+
+const (
+	defaultGmailNewerThan  = "30d"
+	defaultGmailMaxResults = 100
 )
 
 // Source は案件ソース1つぶんの設定。
@@ -30,6 +38,32 @@ type Source struct {
 	Enabled bool       `yaml:"enabled"`
 	// Path は fixture 系ソースが読むディレクトリ。
 	Path string `yaml:"path"`
+
+	// Senders は gmail ソースが取得対象とする送信元アドレス。
+	//
+	// キーワード検索にしないのは、実受信箱では転職サイトの正社員求人・アルバイト求人が
+	// 大量に混ざり、案件メールがノイズに埋もれるため。送信元で絞る。
+	Senders []string `yaml:"senders"`
+	// NewerThan は Gmail 検索の対象期間（例: "30d"）。空なら既定値。
+	NewerThan string `yaml:"newer_than"`
+	// MaxResults は1回の収集で取得するメールの上限。0 なら既定値。
+	MaxResults int `yaml:"max_results"`
+}
+
+// GmailNewerThan は対象期間を返す（未設定なら既定値）。
+func (s Source) GmailNewerThan() string {
+	if s.NewerThan == "" {
+		return defaultGmailNewerThan
+	}
+	return s.NewerThan
+}
+
+// GmailMaxResults は取得上限を返す（未設定なら既定値）。
+func (s Source) GmailMaxResults() int {
+	if s.MaxResults <= 0 {
+		return defaultGmailMaxResults
+	}
+	return s.MaxResults
 }
 
 // Sources は sources.yaml のルート。
@@ -45,6 +79,16 @@ type Env struct {
 	SlackWebhookURL string
 	// SlackErrorWebhookURL はソース取得失敗の送信先。未設定ならエラーは Slack へ送らない。
 	SlackErrorWebhookURL string
+
+	// Google* は Gmail の読み取りに使う。gmail ソースが有効なときのみ必須。
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleRefreshToken string
+}
+
+// HasGoogleCredentials は Gmail の取得に必要な3つが揃っているかを返す。
+func (e Env) HasGoogleCredentials() bool {
+	return e.GoogleClientID != "" && e.GoogleClientSecret != "" && e.GoogleRefreshToken != ""
 }
 
 // LoadProfile は profile.yaml を読み、検証まで行う。
@@ -157,15 +201,52 @@ func ValidateSources(s Sources) error {
 		}
 		seen[src.Name] = struct{}{}
 
+		// path の必須チェックを type ごとに分けるのは、gmail が読むのが
+		// ディレクトリではなく受信箱であり、path を持たないため。
 		switch src.Type {
 		case SourceTypeFixtureEmail, SourceTypeFixtureHTML:
+			if src.Path == "" {
+				return fmt.Errorf("%w: source %q requires path", model.ErrInvalidSource, src.Name)
+			}
+		case SourceTypeGmail:
+			if err := validateGmailSource(src); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("%w: source %q has unsupported type %q",
 				model.ErrInvalidSource, src.Name, src.Type)
 		}
-		if src.Path == "" {
-			return fmt.Errorf("%w: source %q requires path", model.ErrInvalidSource, src.Name)
+	}
+	return nil
+}
+
+// gmailNewerThanRe は Gmail の newer_than が受け付ける形式（1d / 2w / 3m / 1y）。
+var gmailNewerThanRe = regexp.MustCompile(`^[1-9][0-9]*[dwmy]$`)
+
+// validateGmailSource は gmail ソース固有の設定を検証する。
+//
+// 形式の誤りを起動時に弾くのは、Gmail が不正なクエリをエラーにせず
+// **0件で返す**ため。`newer_than: 30days` と書き間違えると、収集は成功扱いのまま
+// 案件が1件も取れず、無音の原因を追うのが難しくなる。
+func validateGmailSource(src Source) error {
+	senders := 0
+	for _, s := range src.Senders {
+		if strings.TrimSpace(s) == "" {
+			return fmt.Errorf("%w: source %q has an empty sender", model.ErrInvalidSource, src.Name)
 		}
+		senders++
+	}
+	if senders == 0 {
+		return fmt.Errorf("%w: source %q requires senders", model.ErrInvalidSource, src.Name)
+	}
+
+	if src.NewerThan != "" && !gmailNewerThanRe.MatchString(src.NewerThan) {
+		return fmt.Errorf("%w: source %q has invalid newer_than %q (例: 30d / 2w / 3m / 1y)",
+			model.ErrInvalidSource, src.Name, src.NewerThan)
+	}
+	if src.MaxResults < 0 {
+		return fmt.Errorf("%w: source %q has negative max_results (%d)",
+			model.ErrInvalidSource, src.Name, src.MaxResults)
 	}
 	return nil
 }
@@ -198,6 +279,9 @@ func LoadEnv() Env {
 		LogLevel:             os.Getenv("LOG_LEVEL"),
 		SlackWebhookURL:      os.Getenv("SLACK_WEBHOOK_URL"),
 		SlackErrorWebhookURL: os.Getenv("SLACK_ERROR_WEBHOOK_URL"),
+		GoogleClientID:       os.Getenv("GOOGLE_CLIENT_ID"),
+		GoogleClientSecret:   os.Getenv("GOOGLE_CLIENT_SECRET"),
+		GoogleRefreshToken:   os.Getenv("GOOGLE_REFRESH_TOKEN"),
 	}
 	if e.DatabaseURL == "" {
 		e.DatabaseURL = defaultDatabaseURL

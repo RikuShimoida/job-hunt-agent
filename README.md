@@ -3,15 +3,14 @@
 複数のエージェント・メール・Web サイトに分散した案件情報を自動で収集し、
 希望条件との一致度を採点して、重複を除いた有望案件だけを通知する CLI ツール（Go）。
 
-> **現状: Phase 0 / Phase 1 / Phase 2 完了。**
-> **Slack へは実際に通知が届く。** Gmail / Web スクレイピングへは**まだ接続していない**。
-> `testdata` の架空サンプルから収集 → 正規化 → SQLite 保存 → 採点 → Slack 通知までが動く。
+> **現状: Phase 0 〜 Phase 3 完了。**
+> **Gmail の実案件が Slack へ届く。** 公開 Web スクレイピングへは**まだ接続していない**。
 > 仕様・設計判断は [docs/architecture.md](docs/architecture.md) に集約している。
 
 ## できること
 
 ```
-testdata（メール / HTML）
+Gmail（案件メール）＋ testdata（メール / HTML）
       ↓ collect    案件を収集し、正規化して SQLite へ保存（重複は登録せず、内容の変更は反映）
       ↓ score      プロフィールと照合し、除外判定と 0〜100 点の採点
       ↓ notify     閾値以上かつ未通知の案件を、加点・減点理由つきで Slack へ送信
@@ -61,9 +60,31 @@ make run-dry
 | `LOG_LEVEL` | 任意（既定 `info`） | `debug` / `info` / `warn` / `error` |
 | `SLACK_WEBHOOK_URL` | **実送信時は必須** | 案件通知の送信先（Incoming Webhook） |
 | `SLACK_ERROR_WEBHOOK_URL` | 任意 | ソース取得失敗の送信先。未設定ならエラーは Slack へ送らず構造化ログにのみ残す |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REFRESH_TOKEN` | **Gmail 利用時は必須** | Gmail の読み取り。1つでも欠けると起動時に停止する |
 
 `--dry-run` なしで `SLACK_WEBHOOK_URL` が未設定なら**起動時に停止する**。
 黙って標準出力へフォールバックすると「送ったつもりで送られていない」事故になるため。
+
+### Gmail を繋ぐ
+
+```bash
+# 1. Google Cloud Console でプロジェクトを作り、Gmail API を有効化する
+# 2. OAuth クライアント ID（種類: デスクトップアプリ）を発行し、.env に設定する
+#      GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+# 3. リフレッシュトークンを取得して .env に貼る（表示された URL をブラウザで開いて認可する）
+go run ./cmd/job-hunt-agent auth gmail
+
+# 4. config/sources.yaml の gmail ソースを enabled: true にする
+```
+
+要求するスコープは **`gmail.readonly` のみ**。削除・返信・ラベル変更は一切行わない。
+
+対応しているエージェントは**クラウドテック**と**フォスターネット**の2社。この2社だけが
+採点に必要な単価・稼働・リモート・スキルをメール本文に持つ。取得は**送信元アドレスで絞る**
+（キーワード検索にすると転職サイトの求人メールに埋もれるため）。
+
+Remogu（本文に単価もスキルも無い）・フリーランスハブ（1メールに複数案件）・
+ギークス（案件データなし）は対象外。理由は [docs/architecture.md](docs/architecture.md) を参照。
 
 設定のうち、解釈を間違えやすい2つ。
 
@@ -88,6 +109,7 @@ make run-dry
 | コマンド | 説明 |
 |---|---|
 | `job-hunt-agent init` | 設定ファイルと `.env` を生成する（既存は上書きしない） |
+| `job-hunt-agent auth gmail` | Gmail の読み取り専用トークンを取得する |
 | `job-hunt-agent profile validate` | プロフィール設定を検証する |
 | `job-hunt-agent collect [--source <name>]` | 案件を収集して保存する |
 | `job-hunt-agent score` | 保存済み案件を再評価する |
@@ -166,10 +188,11 @@ make run-dry
 
 ## 現時点の対象外
 
-Phase 3 以降で実装する。
+Phase 4 以降で実装する。
 
-- **Gmail** 読み取り専用 OAuth（Phase 3）
 - **公開 Web コネクタ**（Phase 4。実装前に公開取得の可否と利用条件を確認する）
+- **Remogu**（メール本文に単価もスキルも無く、案件ページの取得が要るため Phase 4 の領分）
+- **フリーランスハブ**（1メールに複数案件。「1メール = 1案件」のモデル前提を変える必要がある）
 - 類似度ベースの重複排除・リトライ・構造変更検知・`status` サブコマンド（Phase 5）
 
 プロダクトとして**やらないこと**（自動応募・自動返信・スキルシート自動送信・Gmail の変更操作・
