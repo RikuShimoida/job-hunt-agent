@@ -1,5 +1,4 @@
-# Phase 1 では外部サービスへ接続しない。
-# type は fixture_email / fixture_html のみ対応（Gmail は Phase 3、公開 Web は Phase 4）。
+# type は fixture_email / fixture_html / gmail に対応（公開 Web は Phase 4）。
 sources:
   - name: fixture-email
     type: fixture_email
@@ -10,3 +9,21 @@ sources:
     type: fixture_html
     enabled: true
     path: testdata/html
+
+  # Gmail から案件メールを読む（読み取り専用）。
+  #
+  # 有効にする前に GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN を
+  # .env へ設定すること（未設定のまま enabled: true にすると起動時に停止する）。
+  # リフレッシュトークンは `job-hunt-agent auth gmail` で取得する。
+  #
+  # senders は必須。キーワード検索にしないのは、実受信箱では転職サイトの正社員求人や
+  # アルバイト求人が大量に混ざり、案件メールがノイズに埋もれるため。
+  # 本文から単価・稼働・リモート・スキルを抽出できるのは、いま下記の2社のみ。
+  - name: gmail-agents
+    type: gmail
+    enabled: false
+    senders:
+      - alliance-crowdtech@crowdworks.co.jp
+      - careers.desk.haishin@foster-net.co.jp
+    newer_than: 30d
+    max_results: 100

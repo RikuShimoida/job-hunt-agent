@@ -44,6 +44,7 @@ func NewRootCommand() *cobra.Command {
 
 	root.AddCommand(
 		newInitCommand(),
+		newAuthCommand(),
 		newProfileCommand(g),
 		newCollectCommand(g),
 		newScoreCommand(g),

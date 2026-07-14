@@ -248,7 +248,21 @@ func TestValidateSources(t *testing.T) {
 		{
 			name: "未対応の type なら不正",
 			sources: config.Sources{Sources: []config.Source{
-				{Name: "gmail", Type: "gmail", Path: "x"},
+				{Name: "web", Type: "web_scraper", Path: "x"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "gmail は path を持たなくてよい",
+			sources: config.Sources{Sources: []config.Source{
+				{Name: "gmail-agents", Type: config.SourceTypeGmail, Senders: []string{"a@example.test"}},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "gmail に senders が無ければ不正",
+			sources: config.Sources{Sources: []config.Source{
+				{Name: "gmail-agents", Type: config.SourceTypeGmail},
 			}},
 			wantErr: true,
 		},

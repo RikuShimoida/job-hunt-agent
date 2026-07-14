@@ -30,6 +30,8 @@ const (
 	FieldRoles           = "roles"
 	FieldURL             = "url"
 	FieldSummary         = "summary"
+	// FieldJobID はソースが案件へ振る一意の ID（クラウドテックの「JA-086984」など）。
+	FieldJobID = "job_id"
 )
 
 // Fields はソース別パーサーが抽出した生の項目。値は未加工の文字列。
@@ -69,7 +71,7 @@ func Build(raw model.RawJob, f Fields, now time.Time) model.JobPosting {
 	}
 
 	job.ContentHash = ContentHash(job.Title, job.CompanyName, raw.Body)
-	job.DedupKey = DedupKey(job.SourceURL, job.ContentHash)
+	job.DedupKey = DedupKey(raw.SourceName, f[FieldJobID], job.SourceURL, job.ContentHash)
 
 	job.Sources = []model.JobSource{{
 		SourceName:     raw.SourceName,
@@ -83,9 +85,20 @@ func Build(raw model.RawJob, f Fields, now time.Time) model.JobPosting {
 	return job
 }
 
-// DedupKey は重複判定キーを返す。URL があれば URL を、無ければ本文ハッシュを使う。
+// DedupKey は重複判定キーを返す。案件 ID → URL → 本文ハッシュの順に使う。
 // 判定キーを1本に絞ることで、重複判定を DB の UNIQUE 制約だけで完結させる。
-func DedupKey(sourceURL, contentHash string) string {
+//
+// 案件 ID を URL より優先するのは、クラウドテックのようにメールへ案件詳細 URL を
+// 持たず、エントリー先が全案件で共通のフォーム URL になるソースがあるため。
+// 共通 URL を判定に使うと、別々の案件が同一の dedup_key になり、SaveJob の
+// 「衝突したら既存行を更新する」仕様により先に保存した案件が上書きされて消える。
+//
+// ID にソース名を混ぜるのは、別のソースが同じ ID 体系（連番など）を使ったときに
+// 無関係の案件どうしが衝突しないようにするため。
+func DedupKey(sourceName, jobID, sourceURL, contentHash string) string {
+	if id := strings.TrimSpace(jobID); id != "" {
+		return "id:" + strings.TrimSpace(sourceName) + ":" + id
+	}
 	if u := strings.TrimSpace(sourceURL); u != "" {
 		return "url:" + u
 	}

@@ -209,6 +209,11 @@ func toJobPosting(raw model.RawJob, now time.Time) (model.JobPosting, error) {
 		if header.MessageID != "" {
 			enriched.ExternalID = header.MessageID
 		}
+		// 実エージェントのメールは fixture 形式と書式が異なるため、送信元別の
+		// 抽出結果があればそちらを優先する（fixture 形式の Parse では項目が取れない）。
+		if agentFields, ok := email.Extract(enriched.Sender, raw.Body); ok {
+			fields = agentFields
+		}
 		return parser.Build(enriched, fields, now), nil
 
 	case "html":
