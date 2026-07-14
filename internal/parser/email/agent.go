@@ -174,7 +174,7 @@ func applyURL(lines []string) string {
 		if t == "" {
 			continue
 		}
-		if isHeading(t) {
+		if isApplySectionEnd(t) {
 			return ""
 		}
 		if u := firstHTTPS(t); u != "" {
@@ -182,6 +182,16 @@ func applyURL(lines []string) string {
 		}
 	}
 	return ""
+}
+
+// isApplySectionEnd はエントリー方法セクションの終端を判定する。
+//
+// isHeading を流用しないのは、あれが「※」始まりの行も見出しとみなし、
+// 「※担当より連絡します」のような行内注記が URL より前に入ると応募 URL を落とすため。
+// 塞ぎたいのは配信停止セクション（罫線「=」）と次の主要セクション（「■」）だけなので、
+// その2つへはみ出したときのみ打ち切る。
+func isApplySectionEnd(s string) bool {
+	return strings.HasPrefix(s, "■") || strings.HasPrefix(s, "=")
 }
 
 // firstHTTPS は行に含まれる最初の https:// URL を返す。
@@ -195,7 +205,9 @@ func firstHTTPS(s string) string {
 	if j := strings.IndexAny(u, " \t　"); j >= 0 {
 		u = u[:j]
 	}
-	return u
+	// 空白で切っても「（https://…）」「https://…。」のように末尾へ和文約物が
+	// 貼り付くと URL が壊れる。URL に現れない閉じ括弧・句読点を落とす。
+	return strings.TrimRight(u, "）。、」』｣")
 }
 
 // setSkills は自然文のスキル欄から辞書ベースでスキル名を抽出して詰める。

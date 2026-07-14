@@ -28,19 +28,23 @@ func fullJob() model.JobPosting {
 	days := 3
 
 	return model.JobPosting{
-		Title:            "Java／AWS 基盤改善案件",
-		Score:            92,
-		RateType:         model.RateTypeMonthly,
-		RateMin:          &rateMin,
-		RateMax:          &rateMax,
-		WorkDaysMin:      &days,
-		WorkDaysMax:      &days,
-		RemoteType:       model.RemoteTypeFullRemote,
-		Location:         "東京",
-		StartDate:        &start,
-		RequiredSkills:   []string{"Java", "Spring", "AWS", "Docker"},
-		SourceURL:        "https://example.test/jobs/1",
-		ScoreReasons:     []string{"希望単価以上", "フルリモート", "得意スキル4件一致"},
+		Title:          "Java／AWS 基盤改善案件",
+		Score:          92,
+		RateType:       model.RateTypeMonthly,
+		RateMin:        &rateMin,
+		RateMax:        &rateMax,
+		WorkDaysMin:    &days,
+		WorkDaysMax:    &days,
+		RemoteType:     model.RemoteTypeFullRemote,
+		Location:       "東京",
+		StartDate:      &start,
+		RequiredSkills: []string{"Java", "Spring", "AWS", "Docker"},
+		SourceURL:      "https://example.test/jobs/1",
+		ScoreReasons: []string{
+			"希望単価 800000円 に到達している",
+			"フルリモートで出社が不要",
+			"得意スキルの Spring、Docker、Terraform が一致する",
+		},
 		RejectionReasons: []string{"Terraform実務経験が歓迎条件"},
 		Sources: []model.JobSource{
 			{SourceName: "レバテック"},
@@ -65,7 +69,7 @@ func TestFormatIncludesAllRequiredFields(t *testing.T) {
 		"東京",
 		"Java、Spring、AWS、Docker",
 		"レバテック",
-		"希望単価以上",
+		"希望単価 800000円 に到達している",
 		"Terraform実務経験が歓迎条件",
 		"https://example.test/jobs/1",
 	}
@@ -85,8 +89,8 @@ func TestFormatShowsRecommendationAndConcerns(t *testing.T) {
 
 	for _, want := range []string{
 		"推奨理由：\n",
-		"・希望単価以上\n",
-		"・フルリモート\n",
+		"・希望単価 800000円 に到達している\n",
+		"・フルリモートで出社が不要\n",
 		"懸念：\n",
 		"・Terraform実務経験が歓迎条件\n",
 	} {
@@ -181,6 +185,29 @@ func TestFormatConcernsIncludeExtractionMisses(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestFormatConcernsIncludeHybridUnknownOnsiteDays は、ハイブリッドで出社日数が
+// 読み取れない案件に「出社日数が案件情報に記載されていない」の懸念が出ることを確かめる。
+//
+// scorer は出社日数 nil のとき超過を断定せず加点0にする。本文の勤務行も日数を出さない
+// 「ハイブリッド」表示になるため、懸念でも「不明」であることを明示して食い違いを防ぐ。
+func TestFormatConcernsIncludeHybridUnknownOnsiteDays(t *testing.T) {
+	t.Parallel()
+
+	job := fullJob()
+	job.RemoteType = model.RemoteTypeHybrid
+	job.OnsiteDays = nil
+
+	out := message.Format(newItem(job))
+
+	if !strings.Contains(out, "懸念：") || !strings.Contains(out, "・出社日数が案件情報に記載されていない") {
+		t.Errorf("ハイブリッドで出社日数不明の懸念が出ていない\n--- 本文 ---\n%s", out)
+	}
+	// 勤務行は日数を伴わない「ハイブリッド」表示（懸念の「不明」と揃える）。
+	if !strings.Contains(out, "勤務：ハイブリッド　") {
+		t.Errorf("勤務行が日数なしのハイブリッド表示になっていない\n--- 本文 ---\n%s", out)
 	}
 }
 

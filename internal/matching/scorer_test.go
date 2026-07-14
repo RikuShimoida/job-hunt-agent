@@ -311,6 +311,40 @@ func TestEvaluateHybridExceedingAllowedOnsiteDays(t *testing.T) {
 	}
 }
 
+// TestEvaluateHybridWithUnknownOnsiteDays は、出社日数が読み取れないハイブリッド案件で
+// scorer が「出社頻度が許容範囲を超える」を断定しないことを固定する。
+//
+// 出社日数 nil を超過扱いにすると、本文（message.formatRemote が日数 nil を「不明」表示、
+// 懸念に「出社日数が案件情報に記載されていない」を挙げる）と食い違う。
+// フォスターネットの「※基本リモート（必要に応じて出社あり）」がこの状態に正規化される。
+func TestEvaluateHybridWithUnknownOnsiteDays(t *testing.T) {
+	t.Parallel()
+
+	p := profile()
+	p.RemoteRequired = false
+	p.MaxOnsiteDays = 1
+
+	job := perfectJob()
+	job.RemoteType = model.RemoteTypeHybrid
+	job.OnsiteDays = nil
+
+	got := matching.Evaluate(job, p)
+
+	if got.Rejected {
+		t.Fatalf("Rejected = true, want false (reasons=%v)", got.RejectionReasons)
+	}
+	if containsSubstring(got.RejectionReasons, "出社頻度が許容範囲を超える") {
+		t.Errorf("出社日数不明なのに超過を断定している: %v", got.RejectionReasons)
+	}
+	if containsSubstring(got.ScoreReasons, "許容範囲の出社頻度") {
+		t.Errorf("出社日数不明なのに出社頻度の加点理由が付いている: %v", got.ScoreReasons)
+	}
+	// リモート関連の加点が付かないため 100 - 30 = 70。加点も減点もしない。
+	if got.Score != 70 {
+		t.Errorf("Score = %d, want 70 (reasons=%v)", got.Score, got.ScoreReasons)
+	}
+}
+
 // TestEvaluateExcludedKeywordScope は、除外キーワードの照合範囲が
 // 案件名・概要に限られることを確かめる。
 //

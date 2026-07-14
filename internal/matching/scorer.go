@@ -73,10 +73,15 @@ func Evaluate(job model.JobPosting, p model.Profile) Result {
 		score += pointsFullRemote + pointsOnsiteOK
 		reasons = append(reasons, "フルリモートで出社が不要")
 	case model.RemoteTypeHybrid:
-		if job.OnsiteDays != nil && *job.OnsiteDays <= p.MaxOnsiteDays {
+		// 出社日数が nil のとき demerit を積まないのは、「超過が確定した」と断定すると
+		// 本文（message.formatRemote は日数 nil を「不明」表示にする）と食い違うため。
+		// 出社日数不明の懸念は表示層（notifier/message）が「記載されていない」として挙げる。
+		switch {
+		case job.OnsiteDays == nil:
+		case *job.OnsiteDays <= p.MaxOnsiteDays:
 			score += pointsOnsiteOK
 			reasons = append(reasons, fmt.Sprintf("出社は週%d日で、許容範囲の出社頻度に収まる", *job.OnsiteDays))
-		} else {
+		default:
 			demerit = append(demerit, "出社頻度が許容範囲を超える")
 		}
 	case model.RemoteTypeOnsite:
@@ -249,16 +254,25 @@ func formatWorkDays(job model.JobPosting) string {
 	return fmt.Sprintf("週%d〜%d日", *job.WorkDaysMin, *job.WorkDaysMax)
 }
 
+// formatRate の nil 判定は notifier/message.formatRate と揃える（両端 nil のときだけ「不明」）。
+// 片側 nil を「不明」に丸めると、本文が `単価：〜850000円` なのに推奨理由が
+// 「希望単価 不明 に到達している」となり、通知内で単価表記が食い違う。
 func formatRate(job model.JobPosting) string {
-	if job.RateMin == nil || job.RateMax == nil {
+	if job.RateMin == nil && job.RateMax == nil {
 		return "不明"
 	}
 	unit := "円"
 	if job.RateType == model.RateTypeHourly {
 		unit = "円/時"
 	}
-	if *job.RateMin == *job.RateMax {
+	switch {
+	case job.RateMax == nil:
+		return fmt.Sprintf("%d%s〜", *job.RateMin, unit)
+	case job.RateMin == nil:
+		return fmt.Sprintf("〜%d%s", *job.RateMax, unit)
+	case *job.RateMin == *job.RateMax:
 		return fmt.Sprintf("%d%s", *job.RateMin, unit)
+	default:
+		return fmt.Sprintf("%d〜%d%s", *job.RateMin, *job.RateMax, unit)
 	}
-	return fmt.Sprintf("%d〜%d%s", *job.RateMin, *job.RateMax, unit)
 }

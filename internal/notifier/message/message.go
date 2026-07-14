@@ -85,9 +85,9 @@ func Format(item port.NotifyItem) string {
 			fmt.Fprintf(&b, "・%s\n", r)
 		}
 	}
-	if concerns := concerns(job); len(concerns) > 0 {
+	if cs := concerns(job); len(cs) > 0 {
 		b.WriteString("懸念：\n")
-		for _, c := range concerns {
+		for _, c := range cs {
 			fmt.Fprintf(&b, "・%s\n", c)
 		}
 	}
@@ -118,6 +118,11 @@ var missingFields = []struct {
 	{func(j model.JobPosting) bool { return j.RateMin == nil && j.RateMax == nil }, "単価が案件情報に記載されていない"},
 	{func(j model.JobPosting) bool { return j.StartDate == nil }, "開始時期が案件情報に記載されていない"},
 	{func(j model.JobPosting) bool { return j.RemoteType == model.RemoteTypeUnknown }, "リモート条件が案件情報に記載されていない"},
+	// ハイブリッドで出社日数が nil のとき、勤務行は「ハイブリッド」（日数なし＝不明）を出す。
+	// scorer も超過を断定せず加点0にするため、ここで「記載されていない」を懸念に挙げて整合させる。
+	{func(j model.JobPosting) bool {
+		return j.RemoteType == model.RemoteTypeHybrid && j.OnsiteDays == nil
+	}, "出社日数が案件情報に記載されていない"},
 	{func(j model.JobPosting) bool { return j.WorkDaysMin == nil || j.WorkDaysMax == nil }, "稼働日数が案件情報に記載されていない"},
 }
 

@@ -193,6 +193,11 @@ func TestExtractCrowdTechApplyURL(t *testing.T) {
 			want: "https://share.hsforms.test/inline",
 		},
 		{
+			name: "URL より前の ※注記行では打ち切らない",
+			body: header + "■■■■エントリー方法■■■■\n※担当より追ってご連絡いたします。\nhttps://share.hsforms.test/afternote\n",
+			want: "https://share.hsforms.test/afternote",
+		},
+		{
 			name: "エントリー方法より前にある URL は採らない",
 			body: header + "■お知らせ\nhttps://example.test/news\n\n■■■■エントリー方法■■■■\nhttps://share.hsforms.test/entry\n",
 			want: "https://share.hsforms.test/entry",
