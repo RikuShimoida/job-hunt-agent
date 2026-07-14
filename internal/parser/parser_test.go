@@ -92,6 +92,42 @@ func TestDedupKeyDistinguishesJobsSharingEntryURL(t *testing.T) {
 	}
 }
 
+// TestBuildApplyURLDoesNotAffectDedupKey は、応募 URL が重複判定へ流れ込まないことを
+// 確かめる（Issue #21）。
+//
+// 応募 URL は提携企業ごとに共通で案件ごとに一意ではない。DedupKey の "url:" 鍵に
+// 流れ込むと、同一企業の別案件が同じ鍵になり、SaveJob の「衝突したら既存行を更新する」
+// 仕様で先に保存した案件が上書きされて消える。
+func TestBuildApplyURLDoesNotAffectDedupKey(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC)
+	raw := model.RawJob{SourceName: "gmail-agents", Body: "本文", Format: "email"}
+
+	fields := func(applyURL string) parser.Fields {
+		return parser.Fields{
+			parser.FieldTitle:    "案件A",
+			parser.FieldApplyURL: applyURL,
+		}
+	}
+
+	// 案件 ID も詳細 URL も持たない案件（hash: へ落ちる）で比べる。応募 URL が
+	// 鍵に混ざるなら、ここで差が出る。
+	first := parser.Build(raw, fields("https://share.hsforms.test/aaa"), now)
+	second := parser.Build(raw, fields("https://forms.gle.test/bbb"), now)
+
+	if first.DedupKey != second.DedupKey {
+		t.Errorf("応募 URL の違いが dedup_key に影響している: %q != %q",
+			first.DedupKey, second.DedupKey)
+	}
+	if first.SourceURL != "" {
+		t.Errorf("SourceURL = %q, want 空（応募 URL を source_url へ流し込まない）", first.SourceURL)
+	}
+	if want := "https://share.hsforms.test/aaa"; first.ApplyURL != want {
+		t.Errorf("ApplyURL = %q, want %q", first.ApplyURL, want)
+	}
+}
+
 func TestContentHashDistinguishesContent(t *testing.T) {
 	t.Parallel()
 

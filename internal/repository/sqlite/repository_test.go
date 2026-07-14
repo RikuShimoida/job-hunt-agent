@@ -53,6 +53,7 @@ func sampleJob(dedupKey string) model.JobPosting {
 		PreferredSkills: []string{"Docker"},
 		Roles:           []string{"バックエンド"},
 		SourceURL:       "https://example.test/jobs/1",
+		ApplyURL:        "https://share.hsforms.test/abc123",
 		FirstSeenAt:     now,
 		LastSeenAt:      now,
 		DedupKey:        dedupKey,
@@ -105,6 +106,9 @@ func TestSaveJobPersistsAllFields(t *testing.T) {
 	}
 	if got.StartDate == nil || got.StartDate.Format("2006-01-02") != "2026-09-01" {
 		t.Errorf("StartDate = %v, want 2026-09-01", got.StartDate)
+	}
+	if got.ApplyURL != job.ApplyURL {
+		t.Errorf("ApplyURL = %q, want %q", got.ApplyURL, job.ApplyURL)
 	}
 	if len(got.Sources) != 1 || got.Sources[0].SourceName != "fixture-email" {
 		t.Errorf("Sources = %+v, want fixture-email", got.Sources)

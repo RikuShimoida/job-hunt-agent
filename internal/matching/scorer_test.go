@@ -229,8 +229,34 @@ func TestEvaluateProducesReasons(t *testing.T) {
 	if !containsSubstring(got.ScoreReasons, "フルリモート") {
 		t.Errorf("ScoreReasons = %v, want to contain フルリモート", got.ScoreReasons)
 	}
-	if !containsSubstring(got.ScoreReasons, "希望単価以上") {
-		t.Errorf("ScoreReasons = %v, want to contain 希望単価以上", got.ScoreReasons)
+	if !containsSubstring(got.ScoreReasons, "希望単価 800000〜850000円 に到達している") {
+		t.Errorf("ScoreReasons = %v, want to contain 希望単価…に到達している", got.ScoreReasons)
+	}
+}
+
+// TestEvaluateOmitsExtractionMisses は、抽出できなかった項目を scorer が
+// 理由として持たないことを固定する（Issue #21）。
+//
+// 抽出漏れの列挙は表示層（notifier/message）に集約している。scorer 側にも残すと
+// 通知の「懸念：」へ同じ内容が二重に出るため、ここで構造的に防ぐ。
+func TestEvaluateOmitsExtractionMisses(t *testing.T) {
+	t.Parallel()
+
+	job := perfectJob()
+	job.RateType = model.RateTypeUnknown
+	job.RateMin, job.RateMax = nil, nil
+	job.RemoteType = model.RemoteTypeUnknown
+	job.OnsiteDays = nil
+
+	got := matching.Evaluate(job, profile())
+
+	if got.Rejected {
+		t.Fatalf("抽出漏れで除外してはならない: %v", got.RejectionReasons)
+	}
+	for _, unwant := range []string{"読み取れなかった", "記載されていない"} {
+		if containsSubstring(got.RejectionReasons, unwant) {
+			t.Errorf("scorer が抽出漏れを理由に挙げている（表示層と二重になる）: %v", got.RejectionReasons)
+		}
 	}
 }
 
@@ -467,7 +493,7 @@ func TestEvaluateHourlyRateIsNotComparedToMonthlyMinimum(t *testing.T) {
 	if !containsSubstring(got.RejectionReasons, "月額換算できない") {
 		t.Errorf("RejectionReasons = %v, want to contain 月額換算できない", got.RejectionReasons)
 	}
-	if containsSubstring(got.ScoreReasons, "希望単価以上") {
+	if containsSubstring(got.ScoreReasons, "希望単価") {
 		t.Errorf("比較できないはずの時給案件に単価の加点が付いた: %v", got.ScoreReasons)
 	}
 }

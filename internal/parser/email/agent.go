@@ -81,15 +81,9 @@ func extractCrowdTech(body string) parser.Fields {
 				setOnce(f, parser.FieldSummary, v)
 			}
 		}
-
-		// エントリー用の URL。全案件で共通のフォームだが、通知に応募導線が
-		// 無いと利用者が案件 ID を手で探す羽目になる。dedup_key は案件 ID を
-		// 優先するため（parser.DedupKey）、共通 URL を載せても重複判定は壊れない。
-		if strings.HasPrefix(head, "https://") {
-			setOnce(f, parser.FieldURL, head)
-		}
 	}
 
+	setOnce(f, parser.FieldApplyURL, applyURL(lines))
 	setSkills(f, parser.FieldRequiredSkills, section(lines, "≪必須経験・スキル≫"))
 	setSkills(f, parser.FieldPreferredSkills, section(lines, "≪尚可経験・スキル≫"))
 	setRoles(f)
@@ -150,6 +144,58 @@ func extractFosterNet(body string) parser.Fields {
 	setRoles(f)
 
 	return f
+}
+
+// entryHeading はエントリー方法のセクション見出し。実メールでは
+// 「■■■■エントリー方法■■■■」のように記号で挟まれるため、部分一致で探す。
+const entryHeading = "エントリー方法"
+
+// applyURL はエントリー方法セクション配下に最初に現れる https:// の URL を返す。
+//
+// 本文全体から最初の https:// を拾わないのは、末尾の「配信停止に関するご案内」に
+// 案件 ID をクエリへ含む Google フォームの URL（docs.google.com/forms/…&entry.NNN=<案件ID>）
+// があるため。案件 ID が入っているぶん応募導線に見えるが実体は配信停止・問い合わせ用で、
+// これを拾うと通知の「応募：」が配信停止フォームを指す（リンクが無い現状より悪い）。
+// 探索をエントリー方法セクションの内側へ閉じることで、この取り違えを構造的に防ぐ。
+func applyURL(lines []string) string {
+	start := -1
+	for i, l := range lines {
+		if strings.Contains(l, entryHeading) {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+
+	for _, l := range lines[start:] {
+		t := strings.TrimSpace(l)
+		if t == "" {
+			continue
+		}
+		if isHeading(t) {
+			return ""
+		}
+		if u := firstHTTPS(t); u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+// firstHTTPS は行に含まれる最初の https:// URL を返す。
+// URL が単独行ではなく文中に埋まる書式（「1.以下URLから → https://…」）にも耐える。
+func firstHTTPS(s string) string {
+	i := strings.Index(s, "https://")
+	if i < 0 {
+		return ""
+	}
+	u := s[i:]
+	if j := strings.IndexAny(u, " \t　"); j >= 0 {
+		u = u[:j]
+	}
+	return u
 }
 
 // setSkills は自然文のスキル欄から辞書ベースでスキル名を抽出して詰める。

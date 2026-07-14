@@ -246,10 +246,18 @@ func TestPipelineEndToEnd(t *testing.T) {
 	printed := out.String()
 
 	// 通知に必要な項目が dry-run 出力へ現れていること。
-	for _, want := range []string{"点・新着", "単価：", "稼働：", "勤務：", "加点：", "URL："} {
+	for _, want := range []string{"点・新着", "単価：", "稼働：", "勤務：", "推奨理由：", "URL："} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("dry-run 出力に %q が含まれていない\n--- 出力 ---\n%s", want, printed)
 		}
+	}
+
+	// 単価を抽出できなかった案件（Go／Kubernetes）は、抽出漏れが「懸念：」へ挙がる。
+	// scorer と表示層の双方が抽出漏れを理由に持つと、ここで同じ行が2度出る。
+	const rateMissing = "・単価が案件情報に記載されていない"
+	if got := strings.Count(printed, rateMissing); got != 1 {
+		t.Errorf("%q の出現回数 = %d, want 1（二重表示または欠落）\n--- 出力 ---\n%s",
+			rateMissing, got, printed)
 	}
 
 	// 出社を伴う案件が通知に混ざっていないこと。
@@ -300,7 +308,7 @@ func TestPipelineSendsToSlackOnceAcrossRuns(t *testing.T) {
 
 	// 送信本文に受入条件の項目が含まれること。
 	joined := strings.Join(sent, "\n")
-	for _, want := range []string{"点・新着", "単価：", "稼働：", "勤務：", "主要スキル：", "加点：", "URL："} {
+	for _, want := range []string{"点・新着", "単価：", "稼働：", "勤務：", "主要スキル：", "推奨理由：", "URL："} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("Slack 送信本文に %q が含まれていない\n--- 本文 ---\n%s", want, joined)
 		}

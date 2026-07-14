@@ -80,6 +80,13 @@ func TestMaterialHashDetectsOnlyMaterialChanges(t *testing.T) {
 			mutate:         func(j *model.JobPosting) { j.Title = "Java／AWS 基盤改善案件（急募）" },
 			wantHashChange: false,
 		},
+		{
+			// 応募 URL は提携企業ごとに共通で、案件の中身を表さない。ハッシュへ含めると
+			// エージェントがフォームを差し替えただけで既通知の全案件が一斉に再通知される。
+			name:           "応募 URL が変わってもハッシュは変わらない",
+			mutate:         func(j *model.JobPosting) { j.ApplyURL = "https://forms.gle.test/changed" },
+			wantHashChange: false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -1,6 +1,7 @@
 package email_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/RikuShimoida/job-hunt-agent/internal/parser"
@@ -38,6 +39,10 @@ const crowdTechBody = `架空 太郎様
 ■■■■エントリー方法■■■■
 1.以下URLからエントリーください。
 https://example-form.test/entry
+
+==============配信停止に関するご案内==============
+配信停止をご希望の場合は以下のフォームからお手続きください。
+https://docs.google.com/forms/d/e/1FAIpQLSfake/viewform?usp=pp_url&entry.547304507=JA-000001
 `
 
 // fosterNetBody は実際のフォスターネット案件紹介メールと同じ書式。
@@ -87,8 +92,10 @@ func TestExtractCrowdTech(t *testing.T) {
 		parser.FieldWorkDays: "5日 / フルリモート",
 		parser.FieldRemote:   "5日 / フルリモート",
 		// 案件詳細 URL を持たないソースの唯一の一意キー。
-		parser.FieldJobID:   "JA-000001",
-		parser.FieldSummary: "要件定義、基本設計、詳細設計、実装、テスト、運用保守",
+		parser.FieldJobID: "JA-000001",
+		// 応募導線は「エントリー方法」セクション配下の URL。案件詳細 URL は持たない。
+		parser.FieldApplyURL: "https://example-form.test/entry",
+		parser.FieldSummary:  "要件定義、基本設計、詳細設計、実装、テスト、運用保守",
 		// 自然文の箇条書きから辞書で抽出する。
 		parser.FieldRequiredSkills:  "Java、JavaScript",
 		parser.FieldPreferredSkills: "要件定義、Docker",
@@ -129,6 +136,96 @@ func TestExtractFosterNet(t *testing.T) {
 		if got := fields[key]; got != wantValue {
 			t.Errorf("fields[%q] = %q, want %q", key, got, wantValue)
 		}
+	}
+}
+
+// TestExtractCrowdTechDoesNotUseUnsubscribeURL は、配信停止セクションの URL を
+// 応募 URL として拾わないことを固定する（Issue #21 の回帰テスト）。
+//
+// 配信停止フォームの URL は案件 ID をクエリに含む（&entry.547304507=JA-000001）ため
+// 応募導線に見えるが、実体は配信停止・問い合わせ用。これを「応募：」として通知すると、
+// 利用者が応募したつもりで配信停止フォームを開くことになる。
+func TestExtractCrowdTechDoesNotUseUnsubscribeURL(t *testing.T) {
+	t.Parallel()
+
+	fields, ok := email.Extract("alliance-crowdtech@crowdworks.co.jp", crowdTechBody)
+	if !ok {
+		t.Fatal("Extract() ok = false, want true")
+	}
+
+	if got := fields[parser.FieldApplyURL]; !strings.HasPrefix(got, "https://example-form.test/") {
+		t.Errorf("apply_url = %q, want エントリー方法セクションの URL", got)
+	}
+	if got := fields[parser.FieldApplyURL]; strings.Contains(got, "docs.google.com") {
+		t.Errorf("apply_url に配信停止フォームの URL を拾っている: %q", got)
+	}
+	// 応募 URL は案件ごとに一意でないため、重複判定に使う source_url へ入れてはならない。
+	if got := fields[parser.FieldURL]; got != "" {
+		t.Errorf("url = %q, want 空（応募 URL を source_url へ流し込まない）", got)
+	}
+}
+
+// TestExtractCrowdTechApplyURL は応募 URL の抽出範囲を固定する。
+func TestExtractCrowdTechApplyURL(t *testing.T) {
+	t.Parallel()
+
+	// 案件名だけは必須（Extract が ok=false を返さないようにするため）。
+	const header = "■案件名\n【Java】架空案件\n\n"
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "エントリー方法セクション配下の URL を採る",
+			body: header + "■■■■エントリー方法■■■■\n1.以下URLからエントリーください。\nhttps://share.hsforms.test/abc123\n",
+			want: "https://share.hsforms.test/abc123",
+		},
+		{
+			name: "提携企業ごとに URL が違っても採れる",
+			body: header + "■■■■エントリー方法■■■■\nhttps://forms.gle.test/xyz789\n",
+			want: "https://forms.gle.test/xyz789",
+		},
+		{
+			name: "文中に埋まった URL も採る",
+			body: header + "■■■■エントリー方法■■■■\n以下より応募 https://share.hsforms.test/inline よろしくお願いします\n",
+			want: "https://share.hsforms.test/inline",
+		},
+		{
+			name: "エントリー方法より前にある URL は採らない",
+			body: header + "■お知らせ\nhttps://example.test/news\n\n■■■■エントリー方法■■■■\nhttps://share.hsforms.test/entry\n",
+			want: "https://share.hsforms.test/entry",
+		},
+		{
+			name: "配信停止セクションの URL は採らない",
+			body: header + "■■■■エントリー方法■■■■\n1.以下URLからエントリーください。\nhttps://share.hsforms.test/entry\n\n==============配信停止に関するご案内==============\nhttps://docs.google.com/forms/d/e/1FAIpQLSfake/viewform?usp=pp_url&entry.547304507=JA-000001\n",
+			want: "https://share.hsforms.test/entry",
+		},
+		{
+			name: "エントリー方法セクションに URL が無ければ空（後続セクションへはみ出さない）",
+			body: header + "■■■■エントリー方法■■■■\n担当者へ返信してください。\n\n==============配信停止に関するご案内==============\nhttps://docs.google.com/forms/d/e/1FAIpQLSfake/viewform\n",
+			want: "",
+		},
+		{
+			name: "エントリー方法セクションが無ければ空",
+			body: header + "■案件ID：JA-000002\n",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fields, ok := email.Extract("alliance-crowdtech@crowdworks.co.jp", tt.body)
+			if !ok {
+				t.Fatal("Extract() ok = false, want true")
+			}
+			if got := fields[parser.FieldApplyURL]; got != tt.want {
+				t.Errorf("apply_url = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
