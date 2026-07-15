@@ -209,10 +209,12 @@ func WorkDays(s string) (*int, *int) {
 	return nil, nil
 }
 
-// matchWorkDays は範囲チェックを通った最初の組を返す。
+// matchWorkDays は範囲チェックを通った全マッチにまたがる大域 min/max を返す。
 //
-// 最初のマッチだけを見て諦めないのは、「月20日稼働（3日）」のように
-// 先頭のマッチが月間日数で、後ろに本来の稼働日数が続く場合があるため。
+// 最初の妥当な組で打ち切らないのは、「4日; 5日」のように稼働日数が `;` で
+// 列挙され複数マッチへ割れる表記で、先頭の「4日」だけを拾い後半を落とさないため。
+// 区切り文字（`;` / `/` / `・`）は解釈せず、妥当な日数トークンを合流させるだけにする。
+// これにより「5日 / フルリモート」は「フルリモート」に日数が無く (5,5) のまま保たれる。
 func matchWorkDays(re *regexp.Regexp, s string) (minV, maxV int, ok bool) {
 	for _, m := range re.FindAllStringSubmatch(s, -1) {
 		lo, err := strconv.Atoi(m[1])
@@ -232,9 +234,14 @@ func matchWorkDays(re *regexp.Regexp, s string) (minV, maxV int, ok bool) {
 		if lo < 1 || hi < lo || hi > 7 {
 			continue
 		}
-		return lo, hi, true
+		if !ok {
+			minV, maxV, ok = lo, hi, true
+			continue
+		}
+		minV = min(minV, lo)
+		maxV = max(maxV, hi)
 	}
-	return 0, 0, false
+	return minV, maxV, ok
 }
 
 // MonthlyHours は「140〜180時間」を月間稼働時間の範囲へ正規化する。

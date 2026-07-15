@@ -174,6 +174,7 @@ func TestWorkDays(t *testing.T) {
 		{name: "平日週5日", input: "平日週5日", wantMin: ptr(5), wantMax: ptr(5)},
 		{name: "週を伴わない5日表記", input: "5日 / フルリモート", wantMin: ptr(5), wantMax: ptr(5)},
 		{name: "週を伴わない範囲表記", input: "3〜4日", wantMin: ptr(3), wantMax: ptr(4)},
+		{name: "セミコロン区切りの複数値を範囲へ合成", input: "4日; 5日 / フルリモート", wantMin: ptr(4), wantMax: ptr(5)},
 		{name: "月間日数を週の稼働日数として読まない", input: "月20日稼働", wantMin: nil, wantMax: nil},
 		{name: "日次の労働時間を週の稼働日数として読まない", input: "1日8時間", wantMin: nil, wantMax: nil},
 		{name: "月間時間と日次時間が並んでも読まない", input: "月160時間（1日8時間×20日）", wantMin: nil, wantMax: nil},
