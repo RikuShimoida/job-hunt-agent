@@ -108,6 +108,37 @@ func TestValidateProfile(t *testing.T) {
 			mutate:  func(p *model.Profile) { p.NotificationThreshold = 100 },
 			wantErr: false,
 		},
+		{
+			name:    "application セクションが空でも通る（後方互換）",
+			mutate:  func(p *model.Profile) { p.Application = model.ApplicationProfile{} },
+			wantErr: false,
+		},
+		{
+			name: "application を全項目記入しても通る",
+			mutate: func(p *model.Profile) {
+				p.Application = model.ApplicationProfile{
+					Introduction:       "バックエンド中心のエンジニアです。",
+					CareerSummary:      "Java / AWS で8年。",
+					Strengths:          []string{"基盤設計", "テスト自動化"},
+					MotivationTemplate: "課題に経験を活かせます。",
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "application.strengths の先頭に空要素があれば不正",
+			mutate: func(p *model.Profile) {
+				p.Application.Strengths = []string{"", "基盤設計"}
+			},
+			wantErr: true,
+		},
+		{
+			name: "application.strengths の末尾に空白のみの要素があれば不正",
+			mutate: func(p *model.Profile) {
+				p.Application.Strengths = []string{"基盤設計", "  "}
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -209,6 +240,74 @@ desired_roles:
 				}
 			}
 		})
+	}
+}
+
+// TestLoadProfileReadsApplicationSection は、応募返信メール用の application
+// セクションが構造体へ正しく読み込まれることを確かめる。
+func TestLoadProfileReadsApplicationSection(t *testing.T) {
+	t.Parallel()
+
+	body := `search_status: searching
+required_skills:
+  - Java
+application:
+  introduction: バックエンド中心のエンジニアです。
+  career_summary: Java / AWS で8年。
+  strengths:
+    - 基盤設計
+    - テスト自動化
+  motivation_template: 課題に経験を活かせます。
+`
+	path := filepath.Join(t.TempDir(), "profile.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("failed to write profile: %v", err)
+	}
+
+	p, err := config.LoadProfile(path)
+	if err != nil {
+		t.Fatalf("LoadProfile() returned error: %v", err)
+	}
+
+	a := p.Application
+	if a.Introduction != "バックエンド中心のエンジニアです。" {
+		t.Errorf("Introduction = %q", a.Introduction)
+	}
+	if a.CareerSummary != "Java / AWS で8年。" {
+		t.Errorf("CareerSummary = %q", a.CareerSummary)
+	}
+	if a.MotivationTemplate != "課題に経験を活かせます。" {
+		t.Errorf("MotivationTemplate = %q", a.MotivationTemplate)
+	}
+	wantStrengths := []string{"基盤設計", "テスト自動化"}
+	if len(a.Strengths) != len(wantStrengths) {
+		t.Fatalf("Strengths = %v, want %v", a.Strengths, wantStrengths)
+	}
+	for i := range wantStrengths {
+		if a.Strengths[i] != wantStrengths[i] {
+			t.Errorf("Strengths[%d] = %q, want %q", i, a.Strengths[i], wantStrengths[i])
+		}
+	}
+}
+
+// TestLoadProfileWithoutApplicationSection は、application セクションを持たない
+// 既存形式の profile.yaml がそのまま読める（後方互換）ことを確かめる。
+func TestLoadProfileWithoutApplicationSection(t *testing.T) {
+	t.Parallel()
+
+	body := "search_status: searching\nrequired_skills:\n  - Java\n"
+	path := filepath.Join(t.TempDir(), "profile.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("failed to write profile: %v", err)
+	}
+
+	p, err := config.LoadProfile(path)
+	if err != nil {
+		t.Fatalf("LoadProfile() returned error: %v", err)
+	}
+	a := p.Application
+	if a.Introduction != "" || a.CareerSummary != "" || a.MotivationTemplate != "" || len(a.Strengths) != 0 {
+		t.Errorf("Application = %+v, want ゼロ値", a)
 	}
 }
 

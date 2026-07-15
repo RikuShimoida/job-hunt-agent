@@ -57,3 +57,19 @@ notification_threshold: 0
 
 # スキルシート（Phase 1 では保管のみ。自動提出はしない）
 skill_sheet_path: ""
+
+# 応募返信メールの下書き素材（採点には一切使わない）
+# 応募に返信が必要な案件で、claude.ai の Gmail コネクタ経由で Claude がこの内容をもとに
+# 返信文の「下書き」を作る。送信は行わない（下書きまで・送信は本人）。
+# すべて任意。未記入でも profile validate は通る（strengths に空要素があるときだけ弾く）。
+application:
+  # 自己紹介（1〜2文）
+  introduction: "バックエンド中心のフリーランスエンジニアです。"
+  # 経歴サマリ
+  career_summary: "Java / Spring での業務システム開発とAWS基盤の構築・改善を8年。"
+  # 強み（箇条書き）
+  strengths:
+    - 大規模トラフィックを捌く基盤設計
+    - CI/CD とテスト自動化の整備
+  # 志望動機の定型文（案件ごとに調整する土台）
+  motivation_template: "貴案件の技術スタックと課題に、これまでの基盤改善の経験が活かせると考えています。"

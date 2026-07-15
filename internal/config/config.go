@@ -166,6 +166,25 @@ func ValidateProfile(p model.Profile) error {
 		return fmt.Errorf("%w: notification_threshold (%d) must be between 0 and 100",
 			model.ErrInvalidProfile, p.NotificationThreshold)
 	}
+	if err := validateApplicationProfile(p.Application); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateApplicationProfile は応募返信メール用セクションを検証する。
+//
+// セクション全体が空でも通す（後方互換。既存 profile.yaml はこのセクションを持たない）。
+// 個々の文字列に長さ制限を課さないのは、良い記述を恣意的な閾値で誤って弾かないため。
+// 検証するのは strengths の空要素だけ——`- ` だけの行のような YAML の書き崩れを
+// 起動時に気づけるようにする（空文字は下書き素材にならない）。
+func validateApplicationProfile(a model.ApplicationProfile) error {
+	for i, s := range a.Strengths {
+		if strings.TrimSpace(s) == "" {
+			return fmt.Errorf("%w: application.strengths[%d] must not be empty",
+				model.ErrInvalidProfile, i)
+		}
+	}
 	return nil
 }
 
