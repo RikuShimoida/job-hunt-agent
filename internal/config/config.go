@@ -93,14 +93,21 @@ func (e Env) HasGoogleCredentials() bool {
 
 // LoadProfile は profile.yaml を読み、検証まで行う。
 func LoadProfile(path string) (model.Profile, error) {
-	var p model.Profile
-
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return p, fmt.Errorf("failed to read profile %s: %w", path, err)
+		return model.Profile{}, fmt.Errorf("failed to read profile %s: %w", path, err)
 	}
+	return parseAndValidateProfile(b)
+}
+
+// parseAndValidateProfile は profile の YAML を unmarshal・正規化・検証する。
+//
+// LoadProfile（起動時ロード）と ApplyProfile（インタビュー更新）の双方から使う。
+// 片方だけ検証が緩い／厳しいという食い違いを避けるため、検証経路を1本に集約する。
+func parseAndValidateProfile(b []byte) (model.Profile, error) {
+	var p model.Profile
 	if err := yaml.Unmarshal(b, &p); err != nil {
-		return p, fmt.Errorf("failed to parse profile %s: %w", path, err)
+		return p, fmt.Errorf("failed to parse profile: %w", err)
 	}
 
 	normalizeSkills(&p)
