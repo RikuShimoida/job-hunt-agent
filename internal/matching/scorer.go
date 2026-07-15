@@ -78,6 +78,7 @@ func Evaluate(job model.JobPosting, p model.Profile) Result {
 		// 出社日数不明の懸念は表示層（notifier/message）が「記載されていない」として挙げる。
 		switch {
 		case job.OnsiteDays == nil:
+			// 出社日数不明。加点も減点もしない（表示層が「記載されていない」を懸念に挙げる）。
 		case *job.OnsiteDays <= p.MaxOnsiteDays:
 			score += pointsOnsiteOK
 			reasons = append(reasons, fmt.Sprintf("出社は週%d日で、許容範囲の出社頻度に収まる", *job.OnsiteDays))
@@ -87,6 +88,7 @@ func Evaluate(job model.JobPosting, p model.Profile) Result {
 	case model.RemoteTypeOnsite:
 		demerit = append(demerit, "常駐案件で出社が必要")
 	case model.RemoteTypeUnknown:
+		// リモート条件不明。加点も減点もしない（表示層が「記載されていない」を懸念に挙げる）。
 	}
 
 	// 得意スキル
@@ -243,7 +245,10 @@ func containsFold(list []string, s string) bool {
 	return false
 }
 
-// formatWorkDays は稼働日数を表記する。呼び出し元が両端の非 nil を確かめてから使う。
+// formatWorkDays は稼働日数を表記する。
+//
+// 呼び出し元（Evaluate の稼働日数ブロック）は両端の非 nil を確かめてから呼ぶため、
+// 冒頭の nil ガードは防御的フォールバックにすぎない（通常は「不明」を返さない）。
 func formatWorkDays(job model.JobPosting) string {
 	if job.WorkDaysMin == nil || job.WorkDaysMax == nil {
 		return "不明"
