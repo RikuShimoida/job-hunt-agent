@@ -38,6 +38,21 @@ type Profile struct {
 	NotificationThreshold int `yaml:"notification_threshold"`
 
 	SkillSheetPath string `yaml:"skill_sheet_path"`
+
+	Application ApplicationProfile `yaml:"application"`
+}
+
+// ApplicationProfile は応募返信メールの下書きを作るための本人情報。
+//
+// Profile 本体（希望条件）と別の構造体に切るのは、これがスコアリング・除外判定の
+// 入力になってはならないため。同じ Profile に平置きすると matching が誤って読む余地が
+// 残るが、別型にすれば型で経路を塞げる。job-hunt-agent（Go）は Gmail へ書き込まず、
+// 下書きは claude.ai の Gmail コネクタが本セクションを素材として読むだけ。
+type ApplicationProfile struct {
+	Introduction       string   `yaml:"introduction"`
+	CareerSummary      string   `yaml:"career_summary"`
+	Strengths          []string `yaml:"strengths"`
+	MotivationTemplate string   `yaml:"motivation_template"`
 }
 
 // Threshold は通知閾値を返す。NotificationThreshold が未設定（0）なら
