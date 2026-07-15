@@ -43,7 +43,13 @@ Go 側が持つのは下書きの素材（`ApplicationProfile`）だけで、生
 
 ### 提供形態
 
-CLI（単一バイナリ）。定期実行は GitHub Actions の schedule または常駐サーバーを想定。
+CLI（単一バイナリ）。定期実行は2方式を想定する。
+
+- **方式A（実装済み）**: Mac 上の launchd。`make schedule-enable` / `schedule-disable` /
+  `schedule-status` でオン・オフを切り替える。ラッパースクリプトが `.env` を読み込み、
+  作業ディレクトリをリポジトリへ固定して `bin/job-hunt-agent run` を起動する（§11）。
+- **方式B（未着手）**: GitHub Actions の schedule。将来 A/B を個別にオン・オフできる構想。
+  本 Issue のスコープは A のみ。
 
 ### 実装フェーズ
 
@@ -384,6 +390,7 @@ type ErrorNotifier interface {
 | 2026-07-15 | 稼働日数は**妥当な全マッチにまたがる大域 min/max を返す**（最初の妥当な組で打ち切らない） | 区切り文字（`;` / `/` / `・`）を列挙として明示的にパースする / 最初の妥当な組を返す従来の `matchWorkDays` を維持する | クラウドテックの `・稼働：4日; 5日 / フルリモート` は稼働日数が `;` で列挙され `bareWorkDaysRe` の別マッチへ割れる。最初の妥当な組で `return` すると先頭の `4日` だけを拾い上限 `5日` を落とす（実 DB の `JA-087086` が `work_days_max=4` になっていた）。区切り文字を解釈せず「妥当な日数トークンを min/max に合流させる」だけにすれば、`;`・`/`・`・` の区別が不要になり、`5日 / フルリモート` は `フルリモート` に日数トークンが無いため `(5,5)` のまま保たれる（`/` を列挙区切りとして扱うかの論点自体が消える）。範囲チェック（1〜7）で `月20日稼働` を弾く既存の守りも各マッチ単位で維持される |
 | 2026-07-15 | 応募返信メールの下書きは **claude.ai の Gmail コネクタ経由で Claude が作り、Go ツールは関与しない**。Go 側は素材（`ApplicationProfile`）を `profile.yaml` に持つだけ | Go に下書き生成を実装する（`gmail.compose` へスコープ拡張＋ LLM 統合） / 型化せず実 `profile.yaml` の自由記述を読む | 「Gmail への書き込みはしない・`gmail.readonly` のみ」（§1・§10）と「生成 AI API を必須にしない」（§1）が両立するのは、**下書き作成をツールの外（Claude コネクタ）へ出す**ときだけ。コネクタは送信機能を持たないため「下書きまで・送信は本人」に構造的に閉じる。Go に実装するとスコープ拡張と LLM 依存の両方が要り、2つの明示的な方針転換になる。素材を型（`ApplicationProfile`）で持つのは、`example.yaml` を唯一の正にして記入例を示せること、Claude が安定してキーで拾えること、`profile validate` で書き崩れ（`strengths` の空要素）を起動時に弾けるため。**この素材はスコアリングに使わない**ので `Profile` 直下に平置きせず別構造体に切り、matching が誤って読む経路を型で塞ぐ |
 | 2026-07-15 | 案件を含まないメールを収集ループで弾く判定は**組み上がった `JobPosting` の述語**（`model.HasContent`）として置き、`email.Extract` の中には置かない。条件は**案件名・企業名・単価がいずれも取れない**の AND | `email.Extract` 内で事務連絡を判定する（email 経路にしか効かない） / `title` 空だけで弾く | 事務連絡メールは `Extract` が `ok=false` を返して fixture 形式 `Parse` へフォールバックし、本文にヘッダ（`Subject:`）が無いため title も空のまま `JobPosting` が組まれ、`hash:` 系 `dedup_key` で空レコードが保存されていた（実 DB に6件）。判定を `Extract` 内に置くと email 経路しか守れないが、述語を収集ループに置けば email の fixture フォールバックも html 経路も**1つのガードで一様に守れ**、Phase 4 の公開 Web コネクタにも効く。`title` 空だけで弾くと「企業名や単価は取れたが title 抽出だけ失敗した良案件」を捨て、「抽出できない項目は null で保存しパイプラインを落とさない」方針と衝突する。単価の「取れた」判定は `RateType` が monthly / hourly のいずれか（ゼロ値・unknown は「取れていない」）。まとめメール（1メール複数案件）は別スコープであり、`■案件名：` を持てば `HasContent()==true` で従来どおり保存される |
+| 2026-07-15 | 定期実行（方式A）は**launchd の plist テンプレート + ラッパースクリプト + Makefile ターゲット**で構成し、Go コードは変更しない。plist に絶対パスをコミットせず、`schedule-enable` が `sed` で置換する | plist へ絶対パスを直接書いてコミットする / cron を使う / `go run` で起動する / ラッパー無しで launchd から直接バイナリを起動する | リポジトリの配置先・ユーザー home はマシン依存であり、絶対パスをコミットすると他環境で壊れる。テンプレート＋置換で解決する。**cron ではなく launchd** を採るのは、スケジュール時刻に Mac がスリープしていても `StartCalendarInterval` が復帰時に取りこぼしを実行するため（ノート PC 前提）。**`go run` ではなく実バイナリ**を使うのは、毎回のコンパイルと Go ツールチェーンへの実行時依存を避けるため。**ラッパーが必須**なのは、`config.LoadEnv` が `os.Getenv` のみで `.env` を自動読み込みせず、launchd から直接起動すると秘密情報が空になり `ErrMissingWebhookURL` / `ErrMissingGoogleCredentials` で起動時停止するため。`.env` のアプリ本体への自動読み込みは別課題としてスコープ外 |
 
 ## 8. スコアリング
 
@@ -684,3 +691,56 @@ Google フォーム（`docs.google.com/forms/…&entry.547304507=<案件ID>`）�
 `GOOGLE_*` が1つでも欠けた状態で `gmail` ソースが有効なら、`model.ErrMissingGoogleCredentials`
 で**起動時に停止する**。黙って0件成功にすると「収集したつもりで1件も取れていない」事故になる
 （`SLACK_WEBHOOK_URL` 未設定で停止するのと同じ方針）。
+
+---
+
+## 11. 定期自動実行（方式A: launchd）
+
+利用者が指示しなくても案件が Slack へ届くよう、Mac 上で `run` を定期実行する。**Go コードは
+変更せず**、運用資産（plist テンプレート・ラッパー・Makefile ターゲット・ドキュメント）だけを追加する。
+
+### 構成
+
+| ファイル | 役割 |
+|---|---|
+| `deploy/launchd/com.job-hunt-agent.run.plist.template` | launchd の設定テンプレート。`__WRAPPER__` / `__WORKDIR__` / `__LOGDIR__` を `schedule-enable` が絶対パスへ置換する |
+| `deploy/launchd/run-wrapper.sh` | `.env` を読み込み、リポジトリへ `cd` して `bin/job-hunt-agent run` を起動する |
+| `Makefile`（`schedule-enable` / `schedule-disable` / `schedule-status`） | `launchctl bootstrap` / `bootout` / `print` を `gui/<uid>` ドメインでラップする |
+
+### 有効化・無効化・状態確認
+
+| コマンド | 動作 |
+|---|---|
+| `make schedule-enable` | `bin` をビルドし、plist を生成して `~/Library/LaunchAgents/` へ置き、launchd へ登録する（平日 08:00）。先に `bootout` して**再実行を冪等**にする |
+| `make schedule-disable` | launchd から外し、plist を削除する（未登録でも失敗しない） |
+| `make schedule-status` | 登録状態を表示する（未登録なら無効である旨を出す） |
+
+スケジュールは `com.job-hunt-agent.run.plist.template` の `StartCalendarInterval` を編集し、
+再度 `schedule-enable` すれば変わる（既定は平日 Weekday 1–5 の 08:00）。
+
+### 設計判断
+
+- **絶対パスをコミットしない**: リポジトリの配置先・ユーザー home はマシン依存。テンプレート＋
+  `sed` 置換で環境ごとに解決する（§7 の ADR）。
+- **cron ではなく launchd**: スケジュール時刻に Mac がスリープしていても、`StartCalendarInterval`
+  が復帰時に取りこぼしを実行する（ノート PC 前提）。
+- **ラッパーで `.env` を読む**: `config.LoadEnv` は `os.Getenv` のみで `.env` を自動読み込みしない。
+  launchd から直接バイナリを起動すると秘密情報が空になり、`ErrMissingWebhookURL` /
+  `ErrMissingGoogleCredentials` で起動時停止する。ラッパーが `set -a; source .env; set +a` で
+  環境へ展開してから起動する。あわせて `WorkingDirectory` 任せにせずラッパー自身も `cd` する
+  （`DATABASE_URL` の既定が相対パスで、起動ディレクトリがずれると別の場所に空 DB が作られるため）。
+- **実バイナリを使う**: `bin/job-hunt-agent`（`make build` 生成物）を起動し `go run` にしない。
+  毎回のコンパイルと Go ツールチェーンへの実行時依存を避ける。
+
+### ログと秘密情報
+
+実行ログは `~/Library/Logs/job-hunt-agent/`（`schedule-enable` が `mkdir -p` する）へ、
+標準出力を `run.out.log`、標準エラーを `run.err.log` として残す。既存の秘密情報保護方針
+（§9・§10。Webhook URL と Gmail クエリをログにも DB にも出さない）はそのまま維持され、
+本 Issue で新たなログ出力は追加しない。
+
+### 失敗時の扱い
+
+`.env` が無い・`bin/job-hunt-agent` が無い場合、ラッパーは明示メッセージを出して非ゼロ終了する。
+秘密情報が欠ける場合は `run` が既存のセンチネルエラーで起動時停止し、ラッパーがその非ゼロ終了を
+そのまま伝播してログへ残す。Gmail 取得の失敗など実行時の部分失敗は既存方針どおり（§6）。

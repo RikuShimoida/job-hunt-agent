@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  job-hunt-agent の定期実行（方式A: launchd）。
+  __WRAPPER__ / __WORKDIR__ / __LOGDIR__ は Makefile の schedule-enable が絶対パスへ置換する。
+  絶対パスをコミットしないのは、リポジトリの配置先・ユーザー home がマシン依存のため。
+  スケジュールを変えたいときはこのファイルの StartCalendarInterval を編集し、再度 schedule-enable する。
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.job-hunt-agent.run</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__WRAPPER__</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__WORKDIR__</string>
+	<key>StartCalendarInterval</key>
+	<array>
+		<dict>
+			<key>Weekday</key>
+			<integer>1</integer>
+			<key>Hour</key>
+			<integer>8</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>Weekday</key>
+			<integer>2</integer>
+			<key>Hour</key>
+			<integer>8</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>Weekday</key>
+			<integer>3</integer>
+			<key>Hour</key>
+			<integer>8</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>Weekday</key>
+			<integer>4</integer>
+			<key>Hour</key>
+			<integer>8</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>Weekday</key>
+			<integer>5</integer>
+			<key>Hour</key>
+			<integer>8</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+	</array>
+	<key>StandardOutPath</key>
+	<string>__LOGDIR__/run.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>__LOGDIR__/run.err.log</string>
+	<key>RunAtLoad</key>
+	<false/>
+</dict>
+</plist>
