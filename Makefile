@@ -44,13 +44,14 @@ check: fmt vet lint test
 schedule-enable: build
 	@mkdir -p "$(SCHEDULE_LOGDIR)"
 	@mkdir -p "$(HOME)/Library/LaunchAgents"
-	@chmod +x "$(CURDIR)/$(LAUNCHD_WRAPPER)"
-	@sed -e 's#__WRAPPER__#$(CURDIR)/$(LAUNCHD_WRAPPER)#g' \
-	     -e 's#__WORKDIR__#$(CURDIR)#g' \
-	     -e 's#__LOGDIR__#$(SCHEDULE_LOGDIR)#g' \
+	@sed -e "s#__WRAPPER__#$(CURDIR)/$(LAUNCHD_WRAPPER)#g" \
+	     -e "s#__WORKDIR__#$(CURDIR)#g" \
+	     -e "s#__LOGDIR__#$(SCHEDULE_LOGDIR)#g" \
 	     "$(LAUNCHD_TEMPLATE)" > "$(LAUNCHD_PLIST)"
+	@plutil -lint "$(LAUNCHD_PLIST)" >/dev/null
 	@launchctl bootout "$(LAUNCHD_DOMAIN)/$(LAUNCHD_LABEL)" 2>/dev/null || true
 	@launchctl bootstrap "$(LAUNCHD_DOMAIN)" "$(LAUNCHD_PLIST)"
+	@launchctl print "$(LAUNCHD_DOMAIN)/$(LAUNCHD_LABEL)" >/dev/null
 	@echo "定期実行を有効化しました（平日 08:00）。ログ: $(SCHEDULE_LOGDIR)"
 
 # 定期実行を無効化する。未登録でも失敗しないようガードする。

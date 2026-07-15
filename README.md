@@ -136,7 +136,8 @@ make schedule-disable   # 無効化
 
 - **launchd を使う理由**: スケジュール時刻に Mac がスリープしていても、復帰時に取りこぼしを実行する
 - **`.env` の扱い**: ラッパースクリプト（`deploy/launchd/run-wrapper.sh`）が `.env` を読み込んでから
-  `run` を起動する。手動 `run` と同じ秘密情報が渡る
+  `run` を起動する。手動 `run` と同じ秘密情報が渡る。`.env` は `source` で**shell 構文として読む**
+  ため、空白などを含む値はダブルクォートで囲むこと（未クォートだと読み込みに失敗する）
 - **スケジュール変更**: `deploy/launchd/com.job-hunt-agent.run.plist.template` の
   `StartCalendarInterval` を編集し、再度 `make schedule-enable` する
 
