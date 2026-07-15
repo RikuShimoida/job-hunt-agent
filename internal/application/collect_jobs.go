@@ -20,7 +20,10 @@ type CollectSummary struct {
 	NewCount       int
 	DuplicateCount int
 	// UpdatedCount は既存案件で重要変更が検出された件数。
-	UpdatedCount  int
+	UpdatedCount int
+	// SkippedCount は案件を含まない（title・企業名・単価がいずれも取れない）
+	// メールをスキップした件数。
+	SkippedCount  int
 	FailedSources []string
 }
 
@@ -86,6 +89,7 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 		}
 
 		jobs := make([]model.JobPosting, 0, len(raws))
+		var skippedCount int
 		for _, raw := range raws {
 			job, err := toJobPosting(raw, c.now())
 			if err != nil {
@@ -93,6 +97,15 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 					slog.String("source", conn.Name()),
 					slog.String("external_id", raw.ExternalID),
 					slog.String("error", err.Error()))
+				continue
+			}
+			// 事務連絡メールのように案件として成立しないもの（title・企業名・
+			// 単価がいずれも取れない）は、空レコードを作らずスキップする。
+			if !job.HasContent() {
+				skippedCount++
+				c.logger.InfoContext(ctx, "案件を含まないメールをスキップしました",
+					slog.String("source", conn.Name()),
+					slog.String("external_id", raw.ExternalID))
 				continue
 			}
 			jobs = append(jobs, job)
@@ -132,6 +145,7 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 		summary.NewCount += newCount
 		summary.DuplicateCount += dupCount + deduped.DuplicateCount
 		summary.UpdatedCount += updatedCount
+		summary.SkippedCount += skippedCount
 
 		run := &model.CollectionRun{
 			SourceName:     conn.Name(),
@@ -162,7 +176,8 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 			slog.Int("fetched", len(raws)),
 			slog.Int("new", newCount),
 			slog.Int("duplicate", dupCount+deduped.DuplicateCount),
-			slog.Int("updated", updatedCount))
+			slog.Int("updated", updatedCount),
+			slog.Int("skipped", skippedCount))
 	}
 
 	c.notifyFailures(ctx, failures)
@@ -172,6 +187,7 @@ func (c *Collector) Collect(ctx context.Context, p model.Profile) (CollectSummar
 		slog.Int("new", summary.NewCount),
 		slog.Int("duplicate", summary.DuplicateCount),
 		slog.Int("updated", summary.UpdatedCount),
+		slog.Int("skipped", summary.SkippedCount),
 		slog.Any("failed_sources", summary.FailedSources))
 
 	return summary, nil
