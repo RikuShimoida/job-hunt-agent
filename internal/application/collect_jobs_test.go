@@ -36,6 +36,20 @@ func emailRaw(source, id, url string) model.RawJob {
 	}
 }
 
+// adminEmailRaw は案件を含まない事務連絡メール（応募確認・就業状況確認など）を模す。
+// 実メールは本文に From:/Subject: ヘッダを持たず、案件名・企業名・単価のラベルも無いため、
+// 抽出すると Title・CompanyName が空・RateType が unknown になる。
+func adminEmailRaw(source, id string) model.RawJob {
+	return model.RawJob{
+		SourceName: source,
+		Format:     "email",
+		ExternalID: id,
+		Body: "いつもお世話になっております。\n" +
+			"先日ご応募いただいた件について、選考状況をお知らせいたします。\n" +
+			"引き続きどうぞよろしくお願いいたします。\n",
+	}
+}
+
 func searchingProfile() model.Profile {
 	return model.Profile{
 		SearchStatus:   model.SearchStatusSearching,
@@ -73,6 +87,73 @@ func TestCollectSavesJobs(t *testing.T) {
 	if repo.jobCount() != 2 {
 		t.Errorf("保存件数 = %d, want 2", repo.jobCount())
 	}
+}
+
+// TestCollectSkipsEmptyJobs は、案件を含まないメール（事務連絡）が
+// 空レコードとして保存されず、スキップ件数へ計上されることを確かめる。
+// 正常な案件メールは従来どおり保存される。
+func TestCollectSkipsEmptyJobs(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := newFakeRepository()
+	conn := &fakeConnector{
+		name: "fixture-email",
+		raws: []model.RawJob{
+			emailRaw("fixture-email", "1", "https://example.test/jobs/1"),
+			adminEmailRaw("fixture-email", "admin-1"),
+			adminEmailRaw("fixture-email", "admin-2"),
+		},
+	}
+
+	c := application.NewCollector(repo, []port.Connector{conn},
+		&fakeErrorNotifier{}, discardLogger(), fixedNow)
+
+	summary, err := c.Collect(ctx, searchingProfile())
+	if err != nil {
+		t.Fatalf("Collect() returned error: %v", err)
+	}
+
+	if summary.FetchedCount != 3 {
+		t.Errorf("FetchedCount = %d, want 3", summary.FetchedCount)
+	}
+	if summary.NewCount != 1 {
+		t.Errorf("NewCount = %d, want 1（案件メールのみ保存されるべき）", summary.NewCount)
+	}
+	if summary.SkippedCount != 2 {
+		t.Errorf("SkippedCount = %d, want 2（事務連絡2件がスキップされるべき）", summary.SkippedCount)
+	}
+	if repo.jobCount() != 1 {
+		t.Errorf("保存件数 = %d, want 1（空レコードが保存されている）", repo.jobCount())
+	}
+}
+
+// TestCollectLogsSkippedCount は、スキップ件数が収集サマリログへ出ることを確かめる。
+func TestCollectLogsSkippedCount(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	repo := newFakeRepository()
+	conn := &fakeConnector{
+		name: "fixture-email",
+		raws: []model.RawJob{
+			emailRaw("fixture-email", "1", "https://example.test/jobs/1"),
+			adminEmailRaw("fixture-email", "admin-1"),
+		},
+	}
+
+	c := application.NewCollector(repo, []port.Connector{conn},
+		&fakeErrorNotifier{}, logger, fixedNow)
+
+	if _, err := c.Collect(ctx, searchingProfile()); err != nil {
+		t.Fatalf("Collect() returned error: %v", err)
+	}
+
+	entry := findLogEntry(t, buf.String(), "収集サマリ")
+	assertLogNumber(t, entry, "skipped", 1)
 }
 
 func TestCollectDoesNotDuplicateOnRerun(t *testing.T) {

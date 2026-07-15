@@ -141,9 +141,9 @@ func newCollectCommand(g *globalFlags) *cobra.Command {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(),
-				"取得 %d件 / 新規 %d件 / 重複 %d件 / 更新 %d件 / 失敗ソース %v\n",
+				"取得 %d件 / 新規 %d件 / 重複 %d件 / 更新 %d件 / スキップ %d件 / 失敗ソース %v\n",
 				summary.FetchedCount, summary.NewCount, summary.DuplicateCount,
-				summary.UpdatedCount, summary.FailedSources)
+				summary.UpdatedCount, summary.SkippedCount, summary.FailedSources)
 			return err
 		},
 	}

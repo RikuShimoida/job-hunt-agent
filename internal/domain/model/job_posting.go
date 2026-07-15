@@ -76,6 +76,23 @@ type JobPosting struct {
 	Sources []JobSource
 }
 
+// HasContent は案件として最低限のコンテンツ（案件名・企業名・単価のいずれか）を
+// 持つかを返す。事務連絡メールのように title も企業名も単価も取れないものは、
+// 空レコードとして保存せずスキップするための判定に使う。
+//
+// title 単独で弾かないのは、「抽出できない項目は null で保存しパイプラインを
+// 落とさない」方針と衝突するため。企業名や単価が取れているのに title の抽出だけ
+// 失敗した案件を捨てると、良案件の取りこぼしになる。
+//
+// 単価は「読めた」ことを RateType が monthly / hourly のいずれかであることで
+// 判定する。RateTypeUnknown だけでなくゼロ値（空文字）も「取れていない」に含める
+// （正規化は必ず RateTypeUnknown を返すが、ゼロ値の JobPosting を誤って
+// コンテンツありとみなさないため）。
+func (j JobPosting) HasContent() bool {
+	hasRate := j.RateType == RateTypeMonthly || j.RateType == RateTypeHourly
+	return j.Title != "" || j.CompanyName != "" || hasRate
+}
+
 // JobSource は案件の紹介元。1つの JobPosting に複数ぶら下がる。
 type JobSource struct {
 	ID             int64
