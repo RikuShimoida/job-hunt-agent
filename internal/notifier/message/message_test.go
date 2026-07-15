@@ -211,6 +211,123 @@ func TestFormatConcernsIncludeHybridUnknownOnsiteDays(t *testing.T) {
 	}
 }
 
+// TestConcernsMatchUnknownFields は本機能の不変条件を総当たりで検証する。
+//
+//	本文（Format）に「不明」相当が出た項目 ⟺ 「懸念：」に対応する1行が出る。
+//
+// ラベル集合の一致（TestSnapshotLabelsMatchMaterialFields）だけでは、本文の
+// 「不明」表示と懸念の判定がずれても検知できない。実際 PR #23 の Medium①
+// （hybrid + 出社日数 nil で本文は日数なしの「ハイブリッド」＝不明なのに、懸念は
+// 超過を断定）はこの穴を通り抜けた。本文を実際にパースして両方向で突き合わせ、
+// 「本文が不明なのに懸念に挙がらない／その逆」の双方をふさぐ。
+//
+// SUT 内部の missingFields（unexported）を再利用せず、テスト側で独立に期待関係を
+// 定義することで、片側だけ壊れたときに検知できる。
+func TestConcernsMatchUnknownFields(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	remoteTypes := []model.RemoteType{
+		model.RemoteTypeFullRemote, model.RemoteTypeHybrid,
+		model.RemoteTypeOnsite, model.RemoteTypeUnknown,
+	}
+	onsiteDaysOpts := []*int{nil, ptr(2)}
+	type rate struct{ min, max *int }
+	rates := []rate{{nil, nil}, {ptr(700000), nil}, {nil, ptr(800000)}, {ptr(700000), ptr(800000)}}
+	starts := []*time.Time{nil, &start}
+	type workDays struct{ min, max *int }
+	work := []workDays{{nil, nil}, {ptr(3), nil}, {nil, ptr(4)}, {ptr(3), ptr(4)}}
+
+	for _, rt := range remoteTypes {
+		for _, od := range onsiteDaysOpts {
+			for _, r := range rates {
+				for _, s := range starts {
+					for _, w := range work {
+						job := model.JobPosting{
+							Title:       "案件",
+							Score:       92,
+							RateType:    model.RateTypeMonthly,
+							RateMin:     r.min,
+							RateMax:     r.max,
+							RemoteType:  rt,
+							OnsiteDays:  od,
+							StartDate:   s,
+							WorkDaysMin: w.min,
+							WorkDaysMax: w.max,
+							// 紹介元「不明」は抽出漏れ懸念の対象外。値を入れて誤検知を避ける。
+							Sources: []model.JobSource{{SourceName: "レバテック"}},
+							// 懸念のノイズを排除するため RejectionReasons は空にする。
+						}
+
+						out := message.Format(newItem(job))
+						rateSeg, workSeg, startSeg, remoteSeg := sectionValues(t, out)
+
+						// 本文の「不明」表示と懸念行を双方向で突き合わせる。
+						assertConcernMatchesDisplay(t, out,
+							rateSeg == "不明", "・単価が案件情報に記載されていない", "単価", job)
+						assertConcernMatchesDisplay(t, out,
+							workSeg == "不明", "・稼働日数が案件情報に記載されていない", "稼働", job)
+						assertConcernMatchesDisplay(t, out,
+							startSeg == "不明", "・開始時期が案件情報に記載されていない", "開始", job)
+						assertConcernMatchesDisplay(t, out,
+							remoteSeg == "不明", "・リモート条件が案件情報に記載されていない", "勤務", job)
+						// ハイブリッドで出社日数が読み取れないとき、勤務行は日数を伴わない
+						// 「ハイブリッド」＝不明を出す。これも懸念と対で揃える。
+						assertConcernMatchesDisplay(t, out,
+							remoteSeg == "ハイブリッド", "・出社日数が案件情報に記載されていない", "出社日数", job)
+					}
+				}
+			}
+		}
+	}
+}
+
+// sectionValues は本文の「単価：… 稼働：… 開始：…」行と「勤務：… 紹介元：…」行を
+// パースし、各セグメントの値を取り出す。値には全角空白「　」・全角コロン「：」を
+// 含まないため、これらで区切って復元できる。
+func sectionValues(t *testing.T, body string) (rateSeg, workSeg, startSeg, remoteSeg string) {
+	t.Helper()
+
+	for _, line := range strings.Split(body, "\n") {
+		switch {
+		case strings.HasPrefix(line, "単価："):
+			parts := strings.Split(line, "　")
+			rateSeg = valueOf(parts, "単価")
+			workSeg = valueOf(parts, "稼働")
+			startSeg = valueOf(parts, "開始")
+		case strings.HasPrefix(line, "勤務："):
+			parts := strings.Split(line, "　")
+			remoteSeg = valueOf(parts, "勤務")
+		}
+	}
+	return
+}
+
+// valueOf は「ラベル：値」形式のセグメント群から、指定ラベルの値を返す。
+func valueOf(parts []string, label string) string {
+	for _, p := range parts {
+		if l, v, ok := strings.Cut(p, "："); ok && l == label {
+			return v
+		}
+	}
+	return ""
+}
+
+// assertConcernMatchesDisplay は「本文が不明表示 ⟺ 懸念行が出る」を双方向で検証する。
+func assertConcernMatchesDisplay(t *testing.T, body string, displayUnknown bool, concern, label string, job model.JobPosting) {
+	t.Helper()
+
+	hasConcern := strings.Contains(body, concern)
+	switch {
+	case displayUnknown && !hasConcern:
+		t.Errorf("本文の %s が「不明」相当なのに懸念 %q が挙がっていない\njob=%+v\n--- 本文 ---\n%s",
+			label, concern, job, body)
+	case hasConcern && !displayUnknown:
+		t.Errorf("懸念 %q が挙がっているのに本文の %s が「不明」相当でない\njob=%+v\n--- 本文 ---\n%s",
+			concern, label, job, body)
+	}
+}
+
 // TestFormatApplyURL は応募リンクの出力条件を確かめる（Issue #21）。
 //
 // 応募 URL（クラウドテック）と案件詳細 URL（フォスターネット）は別物で、
