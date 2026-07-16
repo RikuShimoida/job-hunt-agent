@@ -2,6 +2,8 @@
 
 実装時は必ず @README.md @docs/architecture.md を参照すること。
 設計ドキュメントが未整備の領域は「未定義」として扱い、推測で埋めない（ユーザーに確認する）。
+Gmail コネクタ経由で案件を探すときは @.claude/rules/gmail-agent-search.md に従い、
+@docs/registered-agents.md の登録エージェント一覧を参照すること（無造作に検索しない）。
 
 ## コーディングルール
 

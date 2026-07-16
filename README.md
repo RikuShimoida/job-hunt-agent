@@ -294,4 +294,5 @@ Issue 駆動。1タスク = 1 worktree。`develop` メインの作業ツリー�
 - [CLAUDE.md](CLAUDE.md) — プロジェクト全体のルールと標準コマンド
 - [docs/architecture.md](docs/architecture.md) — 構成・設計判断・スコアリング仕様
 - [docs/worktree-workflow.md](docs/worktree-workflow.md) — worktree 運用の設計
-- `.claude/rules/` — コーディング規約・テスト規約・コマンド実行ルール
+- [docs/registered-agents.md](docs/registered-agents.md) — 登録エージェント一覧（Claude の Gmail 案件検索の参照元）
+- `.claude/rules/` — コーディング規約・テスト規約・コマンド実行ルール・Gmail 案件検索ルール
