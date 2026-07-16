@@ -1,0 +1,32 @@
+name: Claude Understand Homework
+
+# /understand の Phase G。understand-homework ラベル付き Issue のコメントに
+# @claude 付きで回答すると、SKILL.md の Phase G 手順に従って採点を返す。
+on:
+  issue_comment:
+    types: [created]
+
+# Why not contents: write: Actions 側は Issue をクローズも push もしない（クローズは机の Phase R で行う）。
+# 採点コメントの投稿に issues: write、SKILL.md をチェックアウトして読むために contents: read だけ与える。
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  understand:
+    # public リポジトリのため濫用対策を多層化する（3条件の AND）。
+    # 1. @claude メンションを含む / 2. understand-homework ラベル付き Issue に限定 /
+    # 3. 投稿者が write 権限相当（issue_comment ペイロードに常在する author_association で判定）。
+    if: >
+      contains(github.event.comment.body, '@claude') &&
+      contains(join(github.event.issue.labels.*.name, ','), 'understand-homework') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          trigger_phrase: "@claude"
