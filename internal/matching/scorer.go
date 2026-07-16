@@ -56,6 +56,10 @@ func Evaluate(job model.JobPosting, p model.Profile) Result {
 	case job.RateMax == nil:
 	case !comparableRate(job):
 		demerit = append(demerit, fmt.Sprintf("単価が%sで、月額換算できないため希望単価と比較できない", formatRate(job)))
+	case job.RateMin == nil:
+		// 「～85万」のような上限のみ表記。上限額を確定単価として加点すると、実態は
+		// スキル見合いで下振れする案件を満点評価してしまうため、加点も除外もしない。
+		demerit = append(demerit, fmt.Sprintf("単価が%sの上限提示で、確定単価が読み取れないため希望単価と比較できない", formatRate(job)))
 	case p.TargetRate > 0 && *job.RateMax >= p.TargetRate:
 		score += pointsRate
 		reasons = append(reasons, fmt.Sprintf("希望単価 %s に到達している", formatRate(job)))
@@ -169,7 +173,10 @@ func comparableRate(job model.JobPosting) bool {
 func reject(job model.JobPosting, p model.Profile) []string {
 	var out []string
 
-	if job.RateMax != nil && comparableRate(job) &&
+	// RateMin != nil を要求するのは、「～85万」のような上限のみ表記を minimum_rate で
+	// 除外しないため。下限が確定していない以上、上限が最低希望を下回っても「下回る」と
+	// 断定できず、誤除外で良案件を落とすほうが損失が大きい。
+	if job.RateMin != nil && job.RateMax != nil && comparableRate(job) &&
 		p.MinimumRate > 0 && *job.RateMax < p.MinimumRate {
 		out = append(out, fmt.Sprintf("最低希望単価を下回る（%s）", formatRate(job)))
 	}

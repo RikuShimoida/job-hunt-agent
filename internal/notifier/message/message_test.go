@@ -747,6 +747,9 @@ func normalizedStates() []model.JobPosting {
 		"リモート可", "リモート可（週1出社）", "週2日出社", "週5日出社", "常駐必須",
 	}
 	rateInputs := []string{
+		// 上限のみ表記（RateMin=nil / RateMax=上限）を総当たりへ入れ、ハッシュが
+		// 変わるなら差分が必ず出ることを担保する（Issue #20）。
+		"～85万円",
 		"", "応相談", "75〜85万円", "90〜100万円", "80万円", "時給5000円",
 	}
 	skillInputs := [][]string{

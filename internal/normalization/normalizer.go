@@ -28,6 +28,13 @@ var (
 	yenRangeRe = regexp.MustCompile(`(?:[¥￥]\s*([\d,]+)|([\d,]+)\s*円)\s*(?:〜|～|~|-|ー)\s*(?:[¥￥]\s*([\d,]+)|([\d,]+)\s*円?)`)
 	// 「750,000円」「5000円/時」「￥850,000」
 	yenSingleRe = regexp.MustCompile(`(?:[¥￥]\s*([\d,]+)|([\d,]+)\s*円)`)
+	// 「～85万」「～￥850,000」のように先頭区切り記号で下限を伴わない上限のみ表記。
+	// 下限に数字が来ないこと（`[^\d.]` か文字列先頭）を要求するのは、「65万〜90万」の
+	// ような範囲表記まで上限のみと誤読しないため（範囲は Rate が先に照合する）。
+	// 区切り記号を `〜／～／~` に限りハイフン（-・ー）を含めないのは、電話番号・日付の
+	// ハイフンを上限単価と誤読しないため。
+	manYenUpperRe = regexp.MustCompile(`(?:^|[^\d.])\s*[〜～~]\s*(\d+(?:\.\d+)?)\s*万`)
+	yenUpperRe    = regexp.MustCompile(`(?:^|[^\d.])\s*[〜～~]\s*(?:[¥￥]\s*([\d,]+)|([\d,]+)\s*円)`)
 	// 「週3日」「週3〜4日」「週3-4」
 	workDaysRe = regexp.MustCompile(`週\s*(\d)\s*(?:〜|～|~|-|ー)?\s*(\d)?\s*日?`)
 	// 「5日」「3〜4日」。「週」を伴わない稼働表記。
@@ -96,8 +103,33 @@ var skillAliases = map[string]string{
 	"要件定義":          "要件定義",
 }
 
+// rateMatch は正規化した単価の下限・上限。upperOnly は「～85万」のような
+// 上限のみ表記で、下限が確定していないことを表す（RateMin を nil で返す根拠）。
+type rateMatch struct {
+	minV, maxV int
+	upperOnly  bool
+	ok         bool
+}
+
+func (r rateMatch) rate(hourly bool) (model.RateType, *int, *int) {
+	rt := model.RateTypeMonthly
+	if hourly {
+		rt = model.RateTypeHourly
+	}
+	maxV := r.maxV
+	if r.upperOnly {
+		return rt, nil, &maxV
+	}
+	minV := r.minV
+	return rt, &minV, &maxV
+}
+
 // Rate は「80万円」「5,000円/時」等を単価へ正規化する。
 // 判別できない場合は RateTypeUnknown と nil を返す。
+//
+// 「～85万」のような上限のみ表記は RateMin=nil / RateMax=85万 で返す。上限額を
+// 確定単価として満点評価すると、実態は「上限を目安にスキル見合いで決まる」案件を
+// 過大評価するため（min=max に潰すと minimum_rate による誤除外・target_rate の誤加点が起きる）。
 func Rate(s string) (model.RateType, *int, *int) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -108,47 +140,46 @@ func Rate(s string) (model.RateType, *int, *int) {
 		strings.Contains(s, "/時") || strings.Contains(s, "／時") ||
 		strings.Contains(s, "円/h") || strings.Contains(s, "時間単価")
 
-	if minV, maxV, ok := manYen(s); ok {
-		return rateOf(hourly, minV, maxV)
+	if r := manYen(s); r.ok {
+		return r.rate(hourly)
 	}
 
-	if minV, maxV, ok := plainYen(s); ok {
-		return rateOf(hourly, minV, maxV)
+	if r := plainYen(s); r.ok {
+		return r.rate(hourly)
 	}
 
 	return model.RateTypeUnknown, nil, nil
 }
 
-func rateOf(hourly bool, minV, maxV int) (model.RateType, *int, *int) {
-	if hourly {
-		return model.RateTypeHourly, &minV, &maxV
-	}
-	return model.RateTypeMonthly, &minV, &maxV
-}
-
-// plainYen は円・通貨記号の単価を範囲として返す。
+// plainYen は円・通貨記号の単価を返す。
 //
 // 「円」を必須にしないのは、実エージェントのメールに「～￥850,000/月程度」のような
 // 通貨記号だけの表記があるため。「円」を要求すると単価が RateTypeUnknown になり、
 // minimum_rate による除外も target_rate による加点も一切効かなくなる。
 //
-// 範囲表記を先に照合するのは manYen と同じ理由（単一表記を先に見ると上限を捨てる）。
+// 範囲 → 上限のみ → 単一の順で照合するのは manYen と同じ理由。範囲を先に見ないと
+// 「65万〜90万」の上限を、上限のみを単一より先に見ないと「～85万」を取りこぼす。
 // 全マッチを集めて先頭と末尾を min/max に採らないのは、「月額 ￥850,000（交通費別途
 // 500円）」のような但し書きで min=850,000 / max=500 と逆転するため。
-func plainYen(s string) (minV, maxV int, ok bool) {
+func plainYen(s string) rateMatch {
 	if m := yenRangeRe.FindStringSubmatch(s); m != nil {
 		lo, loOK := parseYen(firstNonEmpty(m[1], m[2]))
 		hi, hiOK := parseYen(firstNonEmpty(m[3], m[4]))
 		if loOK && hiOK {
-			return lo, hi, true
+			return rateMatch{minV: lo, maxV: hi, ok: true}
+		}
+	}
+	if m := yenUpperRe.FindStringSubmatch(s); m != nil {
+		if hi, ok := parseYen(firstNonEmpty(m[1], m[2])); ok {
+			return rateMatch{maxV: hi, upperOnly: true, ok: true}
 		}
 	}
 	if m := yenSingleRe.FindStringSubmatch(s); m != nil {
 		if v, valid := parseYen(firstNonEmpty(m[1], m[2])); valid {
-			return v, v, true
+			return rateMatch{minV: v, maxV: v, ok: true}
 		}
 	}
-	return 0, 0, false
+	return rateMatch{}
 }
 
 func parseYen(s string) (int, bool) {
@@ -169,23 +200,28 @@ func firstNonEmpty(a, b string) string {
 	return b
 }
 
-// manYen は「万」表記の単価を範囲として返す。範囲表記を先に試すのは、
-// 単一表記の正規表現は「65万〜90万円」の先頭 65万 にも一致してしまい、
-// 先に評価すると上限を取りこぼすため。
-func manYen(s string) (minV, maxV int, ok bool) {
+// manYen は「万」表記の単価を返す。範囲 → 上限のみ → 単一の順で試すのは、
+// 単一表記の正規表現が「65万〜90万円」の先頭 65万 や「～85万」の 85万 にも
+// 一致してしまい、先に評価すると範囲の上限や上限のみ表記を取りこぼすため。
+func manYen(s string) rateMatch {
 	if m := manYenRangeRe.FindStringSubmatch(s); m != nil {
 		lo, loOK := parseManYen(m[1])
 		hi, hiOK := parseManYen(m[2])
 		if loOK && hiOK {
-			return lo, hi, true
+			return rateMatch{minV: lo, maxV: hi, ok: true}
+		}
+	}
+	if m := manYenUpperRe.FindStringSubmatch(s); m != nil {
+		if hi, ok := parseManYen(m[1]); ok {
+			return rateMatch{maxV: hi, upperOnly: true, ok: true}
 		}
 	}
 	if m := manYenRe.FindStringSubmatch(s); m != nil {
 		if v, valid := parseManYen(m[1]); valid {
-			return v, v, true
+			return rateMatch{minV: v, maxV: v, ok: true}
 		}
 	}
-	return 0, 0, false
+	return rateMatch{}
 }
 
 func parseManYen(s string) (int, bool) {

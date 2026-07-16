@@ -74,10 +74,10 @@ func TestRate(t *testing.T) {
 			wantMax:  ptr(750000),
 		},
 		{
-			name:     "円を伴わない通貨記号だけの表記も月額として読む",
+			name:     "円を伴わない通貨記号の上限のみ表記は min を nil にして上限だけ返す",
 			input:    "～￥850,000/月程度（週5日稼働換算・税別/スキル見合い）",
 			wantType: model.RateTypeMonthly,
-			wantMin:  ptr(850000),
+			wantMin:  nil,
 			wantMax:  ptr(850000),
 		},
 		{
@@ -88,11 +88,32 @@ func TestRate(t *testing.T) {
 			wantMax:  ptr(1000000),
 		},
 		{
-			name:     "上限のみの万円表記は単一値として扱う",
+			name:     "上限のみの万円表記は min を nil にして上限だけ返す",
 			input:    "～75万円(税抜)※スキル見合い",
 			wantType: model.RateTypeMonthly,
-			wantMin:  ptr(750000),
+			wantMin:  nil,
 			wantMax:  ptr(750000),
+		},
+		{
+			name:     "チルダの上限のみ万円表記も min を nil にする",
+			input:    "～85万円",
+			wantType: model.RateTypeMonthly,
+			wantMin:  nil,
+			wantMax:  ptr(850000),
+		},
+		{
+			name:     "半角チルダの上限のみ表記も min を nil にする",
+			input:    "~90万円",
+			wantType: model.RateTypeMonthly,
+			wantMin:  nil,
+			wantMax:  ptr(900000),
+		},
+		{
+			name:     "ハイフンの上限のみ表記は誤読を避けて単一値のまま扱う",
+			input:    "-85万円",
+			wantType: model.RateTypeMonthly,
+			wantMin:  ptr(850000),
+			wantMax:  ptr(850000),
 		},
 		{
 			name:     "通貨記号の時給表記は hourly になる",

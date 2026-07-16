@@ -155,6 +155,14 @@ func TestEvaluateScore(t *testing.T) {
 			wantScore: 80,
 		},
 		{
+			name: "上限のみ表記は希望単価以上でも20点が付かない（Issue #20）",
+			mutate: func(j *model.JobPosting) {
+				j.RateMin = nil
+				j.RateMax = ptr(900000)
+			},
+			wantScore: 80,
+		},
+		{
 			name: "得意スキルが1件も一致しないと25点が付かない",
 			mutate: func(j *model.JobPosting) {
 				j.RequiredSkills = []string{"COBOL"}
@@ -258,6 +266,51 @@ func TestEvaluateOmitsExtractionMisses(t *testing.T) {
 			t.Errorf("scorer が抽出漏れを理由に挙げている（表示層と二重になる）: %v", got.RejectionReasons)
 		}
 	}
+}
+
+// TestEvaluateUpperOnlyRateNotOverValued は「～85万」のような上限のみ表記
+// （RateMin=nil / RateMax=上限）を、確定単価として満点評価・誤除外しないことを
+// 固定する（Issue #20）。上限額を確定単価とみなすと、実態はスキル見合いで下振れする
+// 案件を過大評価・誤除外してしまう。
+func TestEvaluateUpperOnlyRateNotOverValued(t *testing.T) {
+	t.Parallel()
+
+	t.Run("最低希望単価を下回る上限でも除外しない", func(t *testing.T) {
+		t.Parallel()
+
+		job := perfectJob()
+		job.RateMin = nil
+		job.RateMax = ptr(600000) // MinimumRate=700000 を下回る
+
+		got := matching.Evaluate(job, profile())
+
+		if got.Rejected {
+			t.Fatalf("上限のみ表記を除外してはならない: %v", got.RejectionReasons)
+		}
+		if containsSubstring(got.RejectionReasons, "最低希望単価を下回る") {
+			t.Errorf("上限のみ表記を最低単価で誤除外している: %v", got.RejectionReasons)
+		}
+	})
+
+	t.Run("希望単価以上の上限でも加点せず比較不能の懸念を残す", func(t *testing.T) {
+		t.Parallel()
+
+		job := perfectJob()
+		job.RateMin = nil
+		job.RateMax = ptr(900000) // TargetRate=800000 以上
+
+		got := matching.Evaluate(job, profile())
+
+		if got.Rejected {
+			t.Fatalf("除外されるべきではない: %v", got.RejectionReasons)
+		}
+		if containsSubstring(got.ScoreReasons, "希望単価") {
+			t.Errorf("上限のみ表記で希望単価の加点理由が出ている: %v", got.ScoreReasons)
+		}
+		if !containsSubstring(got.RejectionReasons, "上限提示") {
+			t.Errorf("上限のみ表記の比較不能が懸念に出ていない: %v", got.RejectionReasons)
+		}
+	})
 }
 
 func TestEvaluateHybridWithinAllowedOnsiteDays(t *testing.T) {
