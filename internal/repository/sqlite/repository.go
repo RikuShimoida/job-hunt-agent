@@ -251,7 +251,7 @@ func closeRows(rows *sql.Rows, cause error) error {
 }
 
 // listAllSources は全案件の紹介元を1クエリで引き、job_id ごとにまとめて返す。
-// job_id, id 昇順で読むため、各案件のスライドは id 昇順で並ぶ。
+// job_id, id 昇順で読むため、各案件のスライスは id 昇順で並ぶ。
 func (r *Repository) listAllSources(ctx context.Context) (_ map[int64][]model.JobSource, err error) {
 	const q = `SELECT id, job_id, source_name, external_id, source_url,
 		email_message_id, sender, received_at
