@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	assets "github.com/RikuShimoida/job-hunt-agent"
 	"github.com/RikuShimoida/job-hunt-agent/internal/application"
 	"github.com/RikuShimoida/job-hunt-agent/internal/bootstrap"
 	"github.com/RikuShimoida/job-hunt-agent/internal/config"
@@ -80,6 +82,9 @@ func newInitCommand() *cobra.Command {
 
 // copyIfAbsent は dst が既にあれば上書きしない。
 // 実値を入れた設定を誤って消さないため、上書きは行わずスキップを報告する。
+//
+// ひな形（src）はバイナリへ埋め込んだ assets.FS から読む。ディスク相対で読むと
+// go install したバイナリを別ディレクトリで叩いたとき失敗するため。
 func copyIfAbsent(out io.Writer, src, dst string) error {
 	if _, err := os.Stat(dst); err == nil {
 		if _, err := fmt.Fprintf(out, "スキップ: %s は既に存在します\n", dst); err != nil {
@@ -90,7 +95,7 @@ func copyIfAbsent(out io.Writer, src, dst string) error {
 		return fmt.Errorf("failed to stat %s: %w", dst, err)
 	}
 
-	body, err := os.ReadFile(src)
+	body, err := fs.ReadFile(assets.FS, src)
 	if err != nil {
 		return fmt.Errorf("failed to read %s: %w", src, err)
 	}

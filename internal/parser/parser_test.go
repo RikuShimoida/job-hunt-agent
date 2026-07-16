@@ -56,6 +56,48 @@ func TestDedupKey(t *testing.T) {
 			contentHash: "abc123",
 			want:        "url:https://example.test/jobs/1",
 		},
+		{
+			name:        "末尾スラッシュは除去して揃える",
+			sourceName:  "fixture-email",
+			sourceURL:   "https://example.test/jobs/1/",
+			contentHash: "abc123",
+			want:        "url:https://example.test/jobs/1",
+		},
+		{
+			name:        "utm_* の追跡パラメータは除去する",
+			sourceName:  "fixture-email",
+			sourceURL:   "https://example.test/jobs/1?utm_source=mail&utm_campaign=x",
+			contentHash: "abc123",
+			want:        "url:https://example.test/jobs/1",
+		},
+		{
+			name:        "追跡以外のクエリは残しキー順に揃える",
+			sourceName:  "fixture-email",
+			sourceURL:   "https://example.test/jobs?b=2&a=1&utm_source=mail",
+			contentHash: "abc123",
+			want:        "url:https://example.test/jobs?a=1&b=2",
+		},
+		{
+			name:        "fragment は除去する",
+			sourceName:  "fixture-email",
+			sourceURL:   "https://example.test/jobs/1#section",
+			contentHash: "abc123",
+			want:        "url:https://example.test/jobs/1",
+		},
+		{
+			name:        "scheme と host は小文字化する",
+			sourceName:  "fixture-email",
+			sourceURL:   "HTTPS://Example.TEST/jobs/1",
+			contentHash: "abc123",
+			want:        "url:https://example.test/jobs/1",
+		},
+		{
+			name:        "パースできない URL は正規化せず元のまま鍵にする",
+			sourceName:  "fixture-email",
+			sourceURL:   "://not a url",
+			contentHash: "abc123",
+			want:        "url:://not a url",
+		},
 	}
 
 	for _, tt := range tests {

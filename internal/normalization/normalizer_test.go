@@ -246,6 +246,19 @@ func TestRemote(t *testing.T) {
 			wantOnsite: ptr(2),
 		},
 		{
+			// 範囲表記は上限を採る（最悪ケースが許容内のときだけ加点すべきなため）。
+			name:       "週2〜3日出社は hybrid で上限を出社日数に採る",
+			input:      "週2〜3日出社",
+			wantType:   model.RemoteTypeHybrid,
+			wantOnsite: ptr(3),
+		},
+		{
+			name:       "チルダ区切りの範囲表記も上限を採る",
+			input:      "リモート可（週1～2日出社）",
+			wantType:   model.RemoteTypeHybrid,
+			wantOnsite: ptr(2),
+		},
+		{
 			// 出社0日は「フルリモート」と同じ状態へ寄せる。OnsiteDays に 0 を残すと
 			// 同じ意味が2通りで表現でき、表記の揺れだけで本文が同一の「更新」通知が飛ぶ。
 			name:       "週0日出社はフルリモートと同じ状態へ寄せる",
