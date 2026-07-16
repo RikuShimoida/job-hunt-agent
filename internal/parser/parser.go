@@ -7,6 +7,7 @@ package parser
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"net/url"
 	"strings"
 	"time"
 
@@ -106,9 +107,40 @@ func DedupKey(sourceName, jobID, sourceURL, contentHash string) string {
 		return "id:" + strings.TrimSpace(sourceName) + ":" + id
 	}
 	if u := strings.TrimSpace(sourceURL); u != "" {
-		return "url:" + u
+		return "url:" + normalizeURL(u)
 	}
 	return "hash:" + contentHash
+}
+
+// normalizeURL は重複判定に使う URL の表記ゆれを吸収する。
+//
+// メール由来の URL は末尾スラッシュや utm_* の追跡パラメータ・fragment が付きがちで、
+// 素の文字列一致だと同じ案件が別 dedup_key になって重複排除の中核が壊れる。
+// パースできない文字列は正規化せず元のまま返す（重複判定から取りこぼさない）。
+func normalizeURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return raw
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	u.Fragment = ""
+	u.RawFragment = ""
+
+	q := u.Query()
+	for k := range q {
+		if strings.HasPrefix(strings.ToLower(k), "utm_") {
+			q.Del(k)
+		}
+	}
+	// Encode はキー順にソートするため、パラメータの並びが違うだけの URL も揃う。
+	u.RawQuery = q.Encode()
+
+	// ルート（"/"）は残す。案件パスの末尾スラッシュ有無だけを吸収する。
+	if len(u.Path) > 1 {
+		u.Path = strings.TrimRight(u.Path, "/")
+	}
+	return u.String()
 }
 
 // ContentHash は案件名・企業名・本文から内容ハッシュを作る。

@@ -36,8 +36,10 @@ var (
 	bareWorkDaysRe = regexp.MustCompile(`(\d)\s*(?:〜|～|~|-|ー)?\s*(\d)?\s*日(?:[^0-9]|$)`)
 	// 「140〜180時間」
 	hoursRe = regexp.MustCompile(`(\d{2,3})\s*(?:〜|～|~|-|ー)\s*(\d{2,3})\s*時間`)
-	// 「週1出社」「月2回出社」
-	onsiteDaysRe = regexp.MustCompile(`週\s*(\d)\s*(?:日)?\s*(?:程度)?\s*出社`)
+	// 「週1出社」「週2日出社」「週2〜3日出社」。範囲表記も拾うのは、範囲を落とすと
+	// hybrid ではなく unknown になり、remote_required（出社0日のみ許容）の reject を
+	// すり抜けて出社ありの案件が通知されるため。
+	onsiteDaysRe = regexp.MustCompile(`週\s*(\d)\s*(?:〜|～|~|-|ー)?\s*(\d)?\s*(?:日)?\s*(?:程度)?\s*出社`)
 )
 
 // skillAliases は表記ゆれを正規名へ寄せる。キーは小文字化して比較する。
@@ -270,6 +272,14 @@ func Remote(s string) (model.RemoteType, *int) {
 
 	if m := onsiteDaysRe.FindStringSubmatch(s); m != nil {
 		if days, err := strconv.Atoi(m[1]); err == nil {
+			// 範囲表記（「週2〜3日出社」）は上限を採る。加点は「出社日数 <=
+			// max_onsite_days なら +10」であり、範囲の最悪ケース（上限）が許容内の
+			// ときだけ加点すべきなので上限が正しい。
+			if m[2] != "" {
+				if hi, err := strconv.Atoi(m[2]); err == nil && hi > days {
+					days = hi
+				}
+			}
 			// 「週0日出社」で OnsiteDays に 0 を残さないのは、同じ「フルリモート」が
 			// (FullRemote, &0) と (FullRemote, nil) の2通りで表現できてしまうため。
 			// model.materialRemote は出社日数まで見てハッシュを変えるのに、

@@ -125,6 +125,7 @@ internal/
     database/           SQLite の接続とマイグレーション適用
     logging/            slog の組み立て
 migrations/             スキーマ定義 SQL（自身を embed するパッケージ）
+assets.go               init のひな形（.env.example / config/*.example.yaml）を embed（リポジトリ直下）
 testdata/               架空のメール・HTML サンプル
 ```
 
@@ -188,6 +189,13 @@ cli → bootstrap → application → domain/port → domain/model
 `parser.DedupKey` の入力に渡さない。応募 URL は提携企業ごとに共通で案件ごとに一意ではないため、
 `url:` 鍵へ流れ込ませてはならない（§7 の ADR）。
 
+`url:` 鍵に使う URL は `parser.normalizeURL` で正規化してから鍵にする。メール由来の URL は
+末尾スラッシュ・`utm_*` の追跡パラメータ・fragment が付きがちで、素の文字列一致だと同じ案件が
+別 `dedup_key` になって重複排除が壊れる。正規化は scheme / host の小文字化、fragment 除去、
+`utm_*` の除去（残りクエリはキー順に安定化）、案件パス末尾スラッシュの除去（ルート `/` は残す）。
+パースできない文字列は正規化せず元のまま鍵にする（取りこぼさない）。**表示・保存する `SourceURL`
+自体は正規化しない**（利用者が受け取ったメールのリンクと食い違わせないため）。
+
 判定キーを1本に絞ることで、重複判定を DB の制約だけで完結させている。
 案件名・単価・本文類似度による判定は Phase 5。
 
@@ -219,7 +227,7 @@ cli → bootstrap → application → domain/port → domain/model
 
 | コマンド | 説明 |
 |---|---|
-| `init` | `config/*.example.yaml` と `.env.example` から実設定を生成（**既存ファイルは上書きしない**） |
+| `init` | 埋め込んだひな形（`config/*.example.yaml` と `.env.example`）から実設定を生成（**既存ファイルは上書きしない**）。ひな形は `assets` パッケージへ `//go:embed` するため、リポジトリ外で実行しても動く |
 | `auth gmail` | Gmail の読み取り専用トークンを取得する（認可 URL を表示 → 認可後リフレッシュトークンを表示） |
 | `profile validate` | プロフィール設定を検証する |
 | `profile apply --from <file>` | 提案された profile を検証し、現行を履歴退避してから原子的に保存する |
@@ -409,6 +417,9 @@ type ErrorNotifier interface {
 | 2026-07-15 | 保存の順序は**検証 → 履歴退避 → 書き込み**（Issue の「履歴退避 → 検証」から入れ替え） | Issue 記載どおり履歴退避を先に行う | 履歴退避を先にすると、検証に落ちる提案（`profile apply` の入力ミス）のたびに履歴が汚れる。退避は現行 `profile.yaml` を読むだけで書き込みには触れないため、検証を先に置いても「検証を通った profile を保存する前に退避する」という受入条件は満たせる。検証失敗時は履歴も profile.yaml も一切変更しない |
 | 2026-07-15 | 定期実行（方式A）は**launchd の plist テンプレート + ラッパースクリプト + Makefile ターゲット**で構成し、Go コードは変更しない。plist に絶対パスをコミットせず、`schedule-enable` が `sed` で置換する | plist へ絶対パスを直接書いてコミットする / cron を使う / `go run` で起動する / ラッパー無しで launchd から直接バイナリを起動する | リポジトリの配置先・ユーザー home はマシン依存であり、絶対パスをコミットすると他環境で壊れる。テンプレート＋置換で解決する。**cron ではなく launchd** を採るのは、スケジュール時刻に Mac がスリープしていても `StartCalendarInterval` が復帰時に取りこぼしを実行するため（ノート PC 前提）。**`go run` ではなく実バイナリ**を使うのは、毎回のコンパイルと Go ツールチェーンへの実行時依存を避けるため。**ラッパーが必須**なのは、`config.LoadEnv` が `os.Getenv` のみで `.env` を自動読み込みせず、launchd から直接起動すると秘密情報が空になり `ErrMissingWebhookURL` / `ErrMissingGoogleCredentials` で起動時停止するため。`.env` のアプリ本体への自動読み込みは別課題としてスコープ外 |
 | 2026-07-16 | apply の検証だけ **strict デコード**（`yaml.Decoder` + `KnownFields(true)`）でキー名のタイポを弾く。起動時ロード（`LoadProfile`）は**非 strict のまま** | apply も起動時ロードも非 strict のまま（PR #39 の当初実装） / 両経路とも strict にする | verbatim 保存により apply が `profile.yaml` への唯一の書き込み経路になったため、`remote_requird` のようなキーのタイポが**非 strict では黙って無視され no-op 保存**される（「項目名を覚えなくてよい誘導編集」という用途と噛み合わない）。一方、起動時ロードまで strict にすると、既存 `profile.yaml` が将来キーや手書きの余剰キーを持っていた瞬間に**起動不能**になる（後方互換を壊す）。そこで検証経路を2本（`parseAndValidateProfile` 非 strict / `parseAndValidateProfileStrict`）に分け、apply だけ strict にする。strict デコードの未知キーエラーは `model.ErrInvalidProfile` でラップし、既存の判別（`errors.Is`）と現行 profile 不変の不変性をそのまま通す。記入例の全キーが構造体に対応していることは `TestApplyProfileAcceptsExampleStrict` が担保する（example.yaml と `model.Profile` のドリフトで実利用者の apply が壊れるのを防ぐ） |
+| 2026-07-16 | `dedup_key` の `url:` 鍵は `parser.normalizeURL` で正規化してから作る（末尾スラッシュ・`utm_*`・fragment を吸収） | 素の `SourceURL` 文字列をそのまま鍵にする（現状維持） / `SourceURL` 自体を正規化して保存する | メール由来の URL は `.../jobs/1` / `.../jobs/1/` / `.../jobs/1?utm_source=mail` の表記ゆれが付きがちで、素の一致だと同じ案件が別 `dedup_key` になり重複排除の中核が壊れる。ただし `SourceURL` 自体を書き換えると、通知の `URL：` 行が利用者の受け取ったメールのリンクと食い違う。正規化は `dedup_key` の入力だけに閉じ、保存・表示する `SourceURL` は素のまま残す。パース不能な文字列は正規化せず鍵にして取りこぼさない。Phase 4 で外部コネクタが増える前に潰す（追跡パラメータは公開 Web 経由でさらに増えるため） |
+| 2026-07-16 | `init` のひな形は `//go:embed` でバイナリへ埋め込み、リポジトリ直下の `assets` パッケージから読む | `os.ReadFile` でカレントディレクトリ相対に読む（現状維持） / ひな形を `internal/` 配下へ移して埋め込む | 相対読みだと `go install` したバイナリを別ディレクトリで叩くと `config/*.example.yaml` を読めず失敗する（README の `go run ./cmd/...` 前提でのみ動く）。埋め込み指示子は `..` を辿れずパッケージ配下しか見られないが、ひな形は `.env.example`（直下）と `config/*.example.yaml`（サブ）にまたがり、両方を1パッケージから見られるのはリポジトリ直下だけ。ファイルを `internal/` へ移すとテスト・README のディスク参照が壊れるため、`migrations/` と同じく置き場所そのものをパッケージ化し、**現位置のまま**埋め込む（コピーを作らずドリフトを避ける） |
+| 2026-07-16 | 出社日数の正規化（`onsiteDaysRe`）は範囲表記（`週2〜3日出社`）も拾い、**上限を `OnsiteDays` に採る** | 単一表記だけ拾う（現状維持） | 範囲を落とすと hybrid ではなく `unknown` になり、`reject` が `unknown` を除外しない方針から `remote_required`（出社0日のみ許容）の利用者へ出社ありの案件が通知される（PR #8 で直した「万」範囲取りこぼしと同系統）。上限を採るのは、出社頻度の加点が「出社日数 <= `max_onsite_days` なら +10」であり、範囲の最悪ケース（上限）が許容内のときだけ加点すべきなため。上限が 0 のときは従来どおりフルリモートへ寄せる |
 
 ## 8. スコアリング
 

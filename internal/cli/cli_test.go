@@ -3,14 +3,57 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	assets "github.com/RikuShimoida/job-hunt-agent"
 	"github.com/RikuShimoida/job-hunt-agent/internal/application"
 	"github.com/RikuShimoida/job-hunt-agent/internal/domain/model"
 )
+
+// TestInitWritesFilesIndependentOfWorkingDir は、init がひな形を埋め込みから読み、
+// リポジトリ外の作業ディレクトリでも設定を生成できることを固定する。
+//
+// 以前はひな形をカレントディレクトリ相対で読んでいたため、go install したバイナリを
+// 別ディレクトリで叩くと失敗した。埋め込みにしたことでその前提が消えたことを担保する。
+func TestInitWritesFilesIndependentOfWorkingDir(t *testing.T) {
+	// t.Chdir は t.Parallel と併用できない（プロセス全体の CWD を変えるため）。
+	t.Chdir(t.TempDir())
+
+	root := NewRootCommand()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"init"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("init Execute error: %v", err)
+	}
+
+	for _, path := range []string{
+		filepath.Join("config", "profile.yaml"),
+		filepath.Join("config", "sources.yaml"),
+		".env",
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("init did not create %s: %v", path, err)
+		}
+	}
+
+	// 生成物が埋め込んだひな形と一致すること（空ファイルを書いていないことの担保）。
+	want, err := fs.ReadFile(assets.FS, "config/profile.example.yaml")
+	if err != nil {
+		t.Fatalf("failed to read embedded example: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join("config", "profile.yaml"))
+	if err != nil {
+		t.Fatalf("failed to read generated profile: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("generated profile.yaml does not match embedded example")
+	}
+}
 
 // TestReportNotify は、送信失敗が終了コードへ出ることを確かめる。
 //
