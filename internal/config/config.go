@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -102,16 +105,37 @@ func LoadProfile(path string) (model.Profile, error) {
 
 // parseAndValidateProfile は profile の YAML を unmarshal・正規化・検証する。
 //
-// LoadProfile（起動時ロード）と ApplyProfile（インタビュー更新）の双方から使う。
-// 片方だけ検証が緩い／厳しいという食い違いを避けるため、検証経路を1本に集約する。
+// 起動時ロード（LoadProfile）向けに**非 strict**でデコードする。既存 profile.yaml が
+// 将来キーや手書きの余剰キーを持っていても起動を止めないため。
 func parseAndValidateProfile(b []byte) (model.Profile, error) {
 	var p model.Profile
 	if err := yaml.Unmarshal(b, &p); err != nil {
 		return p, fmt.Errorf("failed to parse profile: %w", err)
 	}
+	return normalizeAndValidateProfile(p)
+}
 
+// parseAndValidateProfileStrict は未知キーを拒否する strict デコードで検証する。
+//
+// apply（インタビュー更新）専用。apply が profile.yaml への唯一の書き込み経路になった以上、
+// キー名のタイポ（`remote_requird` など）を黙って無視して no-op 保存するのは用途と噛み合わない。
+// 起動時ロード（LoadProfile）は後方互換のため非 strict のまま（既存ファイルを止めない）。
+func parseAndValidateProfileStrict(b []byte) (model.Profile, error) {
+	var p model.Profile
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&p); err != nil {
+		// 空ドキュメント（io.EOF）は required_skills 未設定として検証で弾く（起動時と同じ扱い）。
+		if errors.Is(err, io.EOF) {
+			return normalizeAndValidateProfile(model.Profile{})
+		}
+		return p, fmt.Errorf("%w: %w", model.ErrInvalidProfile, err)
+	}
+	return normalizeAndValidateProfile(p)
+}
+
+func normalizeAndValidateProfile(p model.Profile) (model.Profile, error) {
 	normalizeSkills(&p)
-
 	if err := ValidateProfile(p); err != nil {
 		return p, err
 	}

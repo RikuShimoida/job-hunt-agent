@@ -123,6 +123,34 @@ func TestApplyProfileRejectsInvalidAndKeepsCurrent(t *testing.T) {
 	}
 }
 
+func TestApplyProfileRejectsUnknownKey(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "profile.yaml")
+	historyDir := filepath.Join(dir, "profile.history")
+
+	const oldBody = "search_status: searching\nrequired_skills:\n  - Java\n"
+	writeProfile(t, profilePath, oldBody)
+
+	// `remote_requird` はタイポ（正: remote_required）。非 strict だと黙って無視され
+	// 検証を通過してしまうため、apply では ErrInvalidProfile で弾く。
+	const typo = "search_status: searching\nrequired_skills:\n  - Go\nremote_requird: true\n"
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	_, err := ApplyProfile(profilePath, historyDir, []byte(typo), now)
+	if !errors.Is(err, model.ErrInvalidProfile) {
+		t.Fatalf("err = %v, want wrapped model.ErrInvalidProfile for unknown key", err)
+	}
+
+	current, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("failed to read profile: %v", err)
+	}
+	if string(current) != oldBody {
+		t.Errorf("profile changed to %q, want unchanged %q", current, oldBody)
+	}
+}
+
 func TestApplyProfileInitialCreate(t *testing.T) {
 	t.Parallel()
 
@@ -168,6 +196,26 @@ func TestApplyProfileVerbatimKeepsComments(t *testing.T) {
 	}
 	if string(current) != proposed {
 		t.Errorf("profile = %q, want verbatim %q (comments/aliases preserved)", current, proposed)
+	}
+}
+
+// TestApplyProfileAcceptsExampleStrict は、記入例の全キーが構造体に対応していることを
+// strict デコード経由で保証する（example.yaml と model.Profile のドリフト検知）。
+// これが落ちると、記入例を土台にした apply が実利用者の手元でも strict に弾かれる。
+func TestApplyProfileAcceptsExampleStrict(t *testing.T) {
+	t.Parallel()
+
+	body, err := os.ReadFile(filepath.Join("..", "..", "config", "profile.example.yaml"))
+	if err != nil {
+		t.Fatalf("failed to read example profile: %v", err)
+	}
+
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "profile.yaml")
+	historyDir := filepath.Join(dir, "profile.history")
+	now := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	if _, err := ApplyProfile(profilePath, historyDir, body, now); err != nil {
+		t.Fatalf("ApplyProfile rejected the example profile under strict decode: %v", err)
 	}
 }
 

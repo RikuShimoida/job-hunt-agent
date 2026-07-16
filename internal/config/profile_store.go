@@ -40,7 +40,8 @@ type ApplyResult struct {
 // model へ unmarshal して marshal し直すと、記入例のコメントや項目順が毎回失われるため。
 // 未正規化のスキル名があっても、実行時 LoadProfile がメモリ上で正規化するので採点は正しく動く。
 func ApplyProfile(profilePath, historyDir string, proposed []byte, now time.Time) (ApplyResult, error) {
-	if _, err := parseAndValidateProfile(proposed); err != nil {
+	// strict デコードでキー名のタイポを弾く（apply は書き込み経路のため。§7 の ADR）。
+	if _, err := parseAndValidateProfileStrict(proposed); err != nil {
 		return ApplyResult{}, err
 	}
 
