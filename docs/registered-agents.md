@@ -3,8 +3,11 @@
 利用者が登録している案件紹介エージェントの一覧。**claude.ai の Gmail コネクタ経由で案件を探すときの参照元**（[.claude/rules/gmail-agent-search.md](../.claude/rules/gmail-agent-search.md)）。
 
 > **この一覧は Claude の手動ワークフロー向け**。job-hunt-agent（Go）の収集対象は
-> [config/sources.yaml](../config/sources.yaml) の `senders` ホワイトリストが正で、本一覧とは別レイヤー。
+> [config/sources.example.yaml](../config/sources.example.yaml) の `senders` ホワイトリストが正で、本一覧とは別レイヤー
+> （実値は `.gitignore` 済みの `config/sources.yaml` に入る）。
 > 「案件メールが届く」と「Go が採点できる」は別軸なので、下表で列を分けている。
+> **本一覧は利用者が実際に登録しているエージェントを正とする**。設計ドキュメントが
+> 案件メール送付元として挙げていても、本人が登録していないエージェントは載せない。
 
 ## 一覧
 
@@ -12,9 +15,10 @@
 |---|---|---|---|---|
 | ギークスジョブ | ○ | 未取得 | × | イベント告知・営業メールのみで案件データを含まない（[architecture.md §7](architecture.md#7-主要な設計判断adr-相当)） |
 | フォスターフリーランス | ○ | `careers.desk.haishin@foster-net.co.jp` | ○ | Go 側の「フォスターネット」ソースと同一。案件詳細 URL（`source_url`）を持つ |
+| クラウドテック | ○ | `alliance-crowdtech@crowdworks.co.jp` | ○ | Go の主採点対象。応募 URL は HubSpot フォーム（`share.hsforms.com`）で `apply_url` に持つ。案件 ID（`JA-######`）で重複判定（[architecture.md §10](architecture.md#10-gmailphase-3)） |
 | midworks | ○ | 未取得 | 未検証 | |
 | ITプロパートナーズ | ○ | 未取得 | 未検証 | |
-| ROSCA | ○ | 未取得 | 間接 | Go では独立ソースではなく、クラウドテック経由の提携企業として登場（応募 URL `share.hsforms.com`。[architecture.md §10](architecture.md#10-gmailphase-3)） |
+| ROSCA | ○ | 未取得 | 間接 | 単独受信の案件メールは無く、クラウドテック案件本文に提携企業（応募先 `share.hsforms.com`）として登場する。Go では独立ソースではない（[architecture.md §10](architecture.md#10-gmailphase-3)） |
 | Remogu | ○ | 未取得 | × | 本文に単価もスキルも無く採点不能。案件ページの取得が要るため Phase 4 の領分（[architecture.md §7](architecture.md#7-主要な設計判断adr-相当)） |
 | クラスメソッド | ○ | 未取得 | 未検証 | |
 | レバテック | × | 未取得 | — | |
@@ -36,6 +40,7 @@
 - **クラウドワークス と クラウドテックは別サービス**。本一覧の「クラウドワークス」は案件メールが届かない扱いだが、Go が監視するのは**クラウドテック**（`alliance-crowdtech@crowdworks.co.jp`）で、これはフリーランス案件を紹介する別サービス（クラウドワークスはクラウドソーシング）。同じ `crowdworks.co.jp` ドメインの送信元でも、混同しない。
 - **ギークス・Remogu は「メールは届く」が Go の採点対象外**。ギークスは案件データを含まず、Remogu は本文に単価・スキルが無い（[architecture.md §7](architecture.md#7-主要な設計判断adr-相当)）。「メールが届く（Claude の手動ワークフローの対象になりうる）」ことと「Go が採点できる」ことは別軸のため、別列にしている。
 - **ROSCA はクラウドテックの提携企業**。Go では独立ソースではなく、クラウドテック案件の応募先（`share.hsforms.com`）として登場する（[architecture.md §10](architecture.md#10-gmailphase-3)）。
+- **フリーランスハブは本一覧に載せない**。[architecture.md §7](architecture.md#7-主要な設計判断adr-相当) が案件メール送付元として挙げているが、利用者本人は登録しておらず、本一覧は登録エージェントを正とするため含めない（Go 側も 1メールに複数案件を載せる形式のため対象外）。
 
 ## 更新方針
 
