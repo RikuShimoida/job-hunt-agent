@@ -466,9 +466,11 @@ func TestPipelineWatchingRaisesThreshold(t *testing.T) {
 		t.Fatalf("watching の Run() でエラー: %v", err)
 	}
 
-	// watching は閾値80のため、searching（閾値60）より通知が減るか同数になる。
-	if watchingSummary.Notify.TargetCount > searchingSummary.Notify.TargetCount {
-		t.Errorf("watching の通知 %d件が searching の %d件より多い（閾値が効いていない）",
+	// watching は閾値80のため、testdata に [60,80) のスコア帯の案件があると
+	// searching（閾値60）では通知され watching では落ちる。厳密に減ることを要求する
+	// （減るか同数の緩い比較だと、両閾値が同じでも通り閾値ロジックの無効化を見逃す）。
+	if watchingSummary.Notify.TargetCount >= searchingSummary.Notify.TargetCount {
+		t.Errorf("watching の通知 %d件が searching の %d件より減っていない（閾値が効いていない）",
 			watchingSummary.Notify.TargetCount, searchingSummary.Notify.TargetCount)
 	}
 }

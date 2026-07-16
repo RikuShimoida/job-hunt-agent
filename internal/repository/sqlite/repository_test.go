@@ -177,17 +177,12 @@ func TestSaveJobDoesNotDuplicateSameDedupKey(t *testing.T) {
 			result.MaterialChanges)
 	}
 
-	count, err := repo.CountJobs(ctx)
-	if err != nil {
-		t.Fatalf("CountJobs() returned error: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("案件件数 = %d, want 1（重複登録されている）", count)
-	}
-
 	jobs, err := repo.ListJobs(ctx)
 	if err != nil {
 		t.Fatalf("ListJobs() returned error: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Errorf("案件件数 = %d, want 1（重複登録されている）", len(jobs))
 	}
 	if !jobs[0].LastSeenAt.Equal(second.LastSeenAt) {
 		t.Errorf("LastSeenAt = %v, want %v（再取得時に更新されるべき）",
@@ -225,6 +220,53 @@ func TestSaveJobMergesSourcesForSameJob(t *testing.T) {
 	if len(jobs[0].Sources) != 2 {
 		t.Errorf("Sources = %d件, want 2件（別ソースからの紹介元は両方残す）: %+v",
 			len(jobs[0].Sources), jobs[0].Sources)
+	}
+}
+
+// TestListJobsGroupsSourcesPerJob は、ListJobs が全紹介元を1クエリで引いて
+// job_id ごとに正しく振り分けることを固定する（N+1 解消でソースが混ざらないこと）。
+func TestListJobsGroupsSourcesPerJob(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo, _ := newRepo(t)
+
+	jobA := sampleJob("url:https://example.test/jobs/a")
+	jobA.ContentHash = "hash-a"
+	jobA.Sources = []model.JobSource{{SourceName: "fixture-email", ExternalID: "a-1"}}
+
+	jobB := sampleJob("url:https://example.test/jobs/b")
+	jobB.ContentHash = "hash-b"
+	jobB.Sources = []model.JobSource{
+		{SourceName: "fixture-email", ExternalID: "b-1"},
+		{SourceName: "fixture-html", ExternalID: "b-2"},
+	}
+
+	for _, j := range []*model.JobPosting{&jobA, &jobB} {
+		if _, err := repo.SaveJob(ctx, j); err != nil {
+			t.Fatalf("SaveJob() returned error: %v", err)
+		}
+	}
+
+	jobs, err := repo.ListJobs(ctx)
+	if err != nil {
+		t.Fatalf("ListJobs() returned error: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("案件 = %d件, want 2件", len(jobs))
+	}
+
+	byKey := make(map[string][]string) // dedup_key -> external_id 群
+	for _, j := range jobs {
+		for _, s := range j.Sources {
+			byKey[j.DedupKey] = append(byKey[j.DedupKey], s.ExternalID)
+		}
+	}
+	if got := byKey["url:https://example.test/jobs/a"]; !slices.Equal(got, []string{"a-1"}) {
+		t.Errorf("jobA の Sources = %v, want [a-1]", got)
+	}
+	if got := byKey["url:https://example.test/jobs/b"]; !slices.Equal(got, []string{"b-1", "b-2"}) {
+		t.Errorf("jobB の Sources = %v, want [b-1 b-2]", got)
 	}
 }
 

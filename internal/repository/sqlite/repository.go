@@ -230,12 +230,13 @@ func (r *Repository) ListJobs(ctx context.Context) (_ []model.JobPosting, err er
 		return nil, fmt.Errorf("failed to iterate jobs: %w", err)
 	}
 
+	// 紹介元は1クエリでまとめて引く。案件数ぶん listSources を発行する N+1 を避ける。
+	sourcesByJob, err := r.listAllSources(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for i := range jobs {
-		sources, err := r.listSources(ctx, jobs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		jobs[i].Sources = sources
+		jobs[i].Sources = sourcesByJob[jobs[i].ID]
 	}
 	return jobs, nil
 }
@@ -249,30 +250,32 @@ func closeRows(rows *sql.Rows, cause error) error {
 	return cause
 }
 
-func (r *Repository) listSources(ctx context.Context, jobID int64) (_ []model.JobSource, err error) {
+// listAllSources は全案件の紹介元を1クエリで引き、job_id ごとにまとめて返す。
+// job_id, id 昇順で読むため、各案件のスライドは id 昇順で並ぶ。
+func (r *Repository) listAllSources(ctx context.Context) (_ map[int64][]model.JobSource, err error) {
 	const q = `SELECT id, job_id, source_name, external_id, source_url,
 		email_message_id, sender, received_at
-	FROM job_sources WHERE job_id = ? ORDER BY id`
+	FROM job_sources ORDER BY job_id, id`
 
-	rows, err := r.db.QueryContext(ctx, q, jobID)
+	rows, err := r.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query job sources: %w", err)
 	}
 	defer func() { err = closeRows(rows, err) }()
 
-	var sources []model.JobSource
+	byJob := make(map[int64][]model.JobSource)
 	for rows.Next() {
 		var s model.JobSource
 		if err := rows.Scan(&s.ID, &s.JobID, &s.SourceName, &s.ExternalID,
 			&s.SourceURL, &s.EmailMessageID, &s.Sender, &s.ReceivedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan job source: %w", err)
 		}
-		sources = append(sources, s)
+		byJob[s.JobID] = append(byJob[s.JobID], s)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("failed to iterate job sources: %w", err)
 	}
-	return sources, nil
+	return byJob, nil
 }
 
 // UpdateScore はスコアリング結果を反映する。
@@ -379,16 +382,6 @@ func (r *Repository) ListNotifiedJobs(ctx context.Context) (_ map[int64]port.Not
 		return nil, fmt.Errorf("failed to iterate notifications: %w", err)
 	}
 	return notified, nil
-}
-
-// CountJobs は保存済み案件の件数を返す。重複登録が起きていないことの検証に使う。
-func (r *Repository) CountJobs(ctx context.Context) (int, error) {
-	var n int
-	if err := r.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM job_postings").Scan(&n); err != nil {
-		return 0, fmt.Errorf("failed to count jobs: %w", err)
-	}
-	return n, nil
 }
 
 func encodeList(items []string) string {
