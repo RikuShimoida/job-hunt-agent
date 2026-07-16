@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -22,6 +23,9 @@ const (
 
 // ErrNotifyFailed は通知の一部または全部を送信できなかったことを示す。
 var ErrNotifyFailed = errors.New("notify failed")
+
+// ErrProfileApply は profile apply の入力不備を示す（検証エラーは model.ErrInvalidProfile）。
+var ErrProfileApply = errors.New("profile apply failed")
 
 type globalFlags struct {
 	profilePath string
@@ -120,7 +124,83 @@ func newProfileCommand(g *globalFlags) *cobra.Command {
 			return err
 		},
 	})
+	profile.AddCommand(newProfileApplyCommand(g))
+	profile.AddCommand(newProfileHistoryCommand(g))
 	return profile
+}
+
+func newProfileApplyCommand(g *globalFlags) *cobra.Command {
+	var from string
+
+	cmd := &cobra.Command{
+		Use:   "apply --from <file>",
+		Short: "提案された profile を検証し、現行を履歴退避してから保存する",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if from == "" {
+				return fmt.Errorf("%w: --from を指定してください", ErrProfileApply)
+			}
+			proposed, err := os.ReadFile(from)
+			if err != nil {
+				return fmt.Errorf("failed to read %s: %w", from, err)
+			}
+
+			historyDir := config.ProfileHistoryDir(g.profilePath)
+			result, err := config.ApplyProfile(g.profilePath, historyDir, proposed, time.Now())
+			if err != nil {
+				return err
+			}
+
+			out := cmd.OutOrStdout()
+			if result.BackupPath != "" {
+				if _, err := fmt.Fprintf(out, "退避: %s\n", result.BackupPath); err != nil {
+					return fmt.Errorf("failed to write output: %w", err)
+				}
+			}
+			_, err = fmt.Fprintf(out, "保存: %s\n", g.profilePath)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&from, "from", "", "保存する profile YAML のパス")
+	return cmd
+}
+
+func newProfileHistoryCommand(g *globalFlags) *cobra.Command {
+	var show string
+
+	cmd := &cobra.Command{
+		Use:   "history",
+		Short: "退避済みの過去条件を一覧・表示する",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			historyDir := config.ProfileHistoryDir(g.profilePath)
+			out := cmd.OutOrStdout()
+
+			if show != "" {
+				body, err := config.HistoryContent(historyDir, show)
+				if err != nil {
+					return err
+				}
+				_, err = out.Write(body)
+				return err
+			}
+
+			entries, err := config.ListHistory(historyDir)
+			if err != nil {
+				return err
+			}
+			if len(entries) == 0 {
+				_, err := fmt.Fprintln(out, "履歴はありません")
+				return err
+			}
+			for _, e := range entries {
+				if _, err := fmt.Fprintln(out, e.ID); err != nil {
+					return fmt.Errorf("failed to write output: %w", err)
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&show, "show", "", "指定した履歴 ID の内容を表示する")
+	return cmd
 }
 
 func newCollectCommand(g *globalFlags) *cobra.Command {

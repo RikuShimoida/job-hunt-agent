@@ -151,6 +151,31 @@ make schedule-disable   # 無効化
 | `watching` | 80点以上のみ通知（探していない時期も良案件は見逃さない） |
 | `paused` | 収集も通知も行わない |
 
+### 希望条件をインタビューで更新する
+
+`config/profile.yaml` はテキスト編集もできるが、`/set-conditions` スキルを使うと**現在値を見せながら
+1項目ずつ**確認して更新できる（項目名・書式・`remote_required` と `max_onsite_days` の同時指定不可
+といった制約を覚えなくてよい）。差分を確認して承認すると保存される。
+
+保存の実体は `profile apply` で、**現行 `profile.yaml` を履歴へ退避してから**上書きする。
+検証に落ちた提案は保存されず、現行ファイルは一切変更されない。書き込みは一時ファイル経由の
+rename で原子的に行うため、中断しても `profile.yaml` は壊れない。
+apply は `profile validate` と同じ検証に加え、**未知のキー（`remote_requird` のようなタイポ）も弾く**
+（黙って無視して no-op 保存になるのを防ぐ）。
+
+```bash
+# スキルを使わず、組み立て済みの YAML を直接適用することもできる
+job-hunt-agent profile apply --from /path/to/new-profile.yaml
+
+# 過去に探していた条件を一覧・表示する（戻したいときの手がかり）
+job-hunt-agent profile history
+job-hunt-agent profile history --show 20260715T141558Z
+```
+
+履歴は `config/profile.history/` に退避される。個人の希望条件を含むため、`profile.yaml` と同様に
+**Git 管理外**（`.gitignore` 済み）。更新すれば次回の `collect` / `score` / `run` から新条件で動く
+（パイプラインは毎回 `profile.yaml` を読み直す。仕組みは変わらない）。
+
 ## コマンド
 
 | コマンド | 説明 |
@@ -158,6 +183,8 @@ make schedule-disable   # 無効化
 | `job-hunt-agent init` | 設定ファイルと `.env` を生成する（既存は上書きしない） |
 | `job-hunt-agent auth gmail` | Gmail の読み取り専用トークンを取得する |
 | `job-hunt-agent profile validate` | プロフィール設定を検証する |
+| `job-hunt-agent profile apply --from <file>` | 提案された profile を検証し、現行を履歴退避してから保存する |
+| `job-hunt-agent profile history [--show <id>]` | 退避済みの過去条件を一覧・表示する |
 | `job-hunt-agent collect [--source <name>]` | 案件を収集して保存する |
 | `job-hunt-agent score` | 保存済み案件を再評価する |
 | `job-hunt-agent notify [--dry-run]` | 閾値以上かつ未通知の案件を Slack へ通知する |
@@ -272,6 +299,7 @@ Issue 駆動。1タスク = 1 worktree。`develop` メインの作業ツリー�
 
 | スキル | 用途 |
 |---|---|
+| `/set-conditions` | 希望条件（`profile.yaml`）をインタビュー形式で更新する（現在値を見せ、差分確認後に保存） |
 | `/ask` | 仕様・設計・ドメインに関する質問（推測せず、根拠を示して回答） |
 | `/clarify` | 大規模機能の要件深掘り |
 | `/report` | 作業完了時の品質チェックと報告 |

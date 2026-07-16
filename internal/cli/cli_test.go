@@ -3,10 +3,13 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/RikuShimoida/job-hunt-agent/internal/application"
+	"github.com/RikuShimoida/job-hunt-agent/internal/domain/model"
 )
 
 // TestReportNotify は、送信失敗が終了コードへ出ることを確かめる。
@@ -63,5 +66,101 @@ func TestReportNotify(t *testing.T) {
 				t.Errorf("サマリが出力されていない: %q", got)
 			}
 		})
+	}
+}
+
+// TestProfileApplyRequiresFrom は --from 未指定を ErrProfileApply で弾くことを確かめる。
+func TestProfileApplyRequiresFrom(t *testing.T) {
+	t.Parallel()
+
+	root := NewRootCommand()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"profile", "apply"})
+
+	if err := root.Execute(); !errors.Is(err, ErrProfileApply) {
+		t.Fatalf("err = %v, want wrapped ErrProfileApply", err)
+	}
+}
+
+// TestProfileApplyEndToEnd は apply が profile を保存し、history が一覧できることを確かめる。
+func TestProfileApplyEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "profile.yaml")
+	fromPath := filepath.Join(dir, "proposed.yaml")
+
+	const oldBody = "search_status: watching\nrequired_skills:\n  - Java\n"
+	const newBody = "search_status: searching\nrequired_skills:\n  - Go\n"
+	if err := os.WriteFile(profilePath, []byte(oldBody), 0o600); err != nil {
+		t.Fatalf("failed to seed profile: %v", err)
+	}
+	if err := os.WriteFile(fromPath, []byte(newBody), 0o600); err != nil {
+		t.Fatalf("failed to write proposed: %v", err)
+	}
+
+	root := NewRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"--profile", profilePath, "profile", "apply", "--from", fromPath})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("apply Execute error: %v", err)
+	}
+
+	got, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("failed to read profile after apply: %v", err)
+	}
+	if string(got) != newBody {
+		t.Errorf("profile after apply = %q, want %q", got, newBody)
+	}
+
+	// history が退避を1件一覧できる。
+	root = NewRootCommand()
+	var histOut bytes.Buffer
+	root.SetOut(&histOut)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"--profile", profilePath, "profile", "history"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("history Execute error: %v", err)
+	}
+	if strings.TrimSpace(histOut.String()) == "" || strings.Contains(histOut.String(), "履歴はありません") {
+		t.Errorf("history output = %q, want one entry", histOut.String())
+	}
+}
+
+// TestProfileApplyRejectsInvalid は不正な profile を弾き、現行を変えないことを確かめる。
+func TestProfileApplyRejectsInvalid(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "profile.yaml")
+	fromPath := filepath.Join(dir, "proposed.yaml")
+
+	const oldBody = "search_status: searching\nrequired_skills:\n  - Java\n"
+	const invalid = "search_status: searching\nrequired_skills:\n  - Go\nremote_required: true\nmax_onsite_days: 2\n"
+	if err := os.WriteFile(profilePath, []byte(oldBody), 0o600); err != nil {
+		t.Fatalf("failed to seed profile: %v", err)
+	}
+	if err := os.WriteFile(fromPath, []byte(invalid), 0o600); err != nil {
+		t.Fatalf("failed to write proposed: %v", err)
+	}
+
+	root := NewRootCommand()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"--profile", profilePath, "profile", "apply", "--from", fromPath})
+	if err := root.Execute(); !errors.Is(err, model.ErrInvalidProfile) {
+		t.Fatalf("err = %v, want wrapped model.ErrInvalidProfile", err)
+	}
+
+	got, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("failed to read profile: %v", err)
+	}
+	if string(got) != oldBody {
+		t.Errorf("profile changed to %q, want unchanged %q", got, oldBody)
 	}
 }

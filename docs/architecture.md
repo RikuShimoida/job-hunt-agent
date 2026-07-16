@@ -222,6 +222,8 @@ cli → bootstrap → application → domain/port → domain/model
 | `init` | `config/*.example.yaml` と `.env.example` から実設定を生成（**既存ファイルは上書きしない**） |
 | `auth gmail` | Gmail の読み取り専用トークンを取得する（認可 URL を表示 → 認可後リフレッシュトークンを表示） |
 | `profile validate` | プロフィール設定を検証する |
+| `profile apply --from <file>` | 提案された profile を検証し、現行を履歴退避してから原子的に保存する |
+| `profile history [--show <id>]` | 退避済みの過去条件を新しい順に一覧 / 表示する |
 | `collect [--source <name>]` | 有効なソースから案件を収集して保存する |
 | `score` | 保存済み案件を再評価する |
 | `notify [--dry-run]` | 閾値以上かつ未通知の案件を Slack へ通知する |
@@ -242,6 +244,18 @@ cli → bootstrap → application → domain/port → domain/model
 （§9「送信失敗と終了コード」）。
 
 `status` サブコマンドは Phase 5（実行履歴の強化）で実装する。
+
+`profile apply` は**検証 → 履歴退避 → 原子的書き込み**の順で動く（`config.ApplyProfile`）。
+検証は `LoadProfile` と同じ経路（`config.parseAndValidateProfile`）を通し、片方だけ緩い／厳しい
+という食い違いを避ける。検証に落ちた提案は現行 `profile.yaml` も履歴も一切触らない。
+書き込みは同一ディレクトリの一時ファイルへ書いてから `os.Rename` する（途中失敗で破損させない）。
+渡された YAML は**そのまま保存する**（再マーシャルしない。§7 の ADR）。
+履歴は `<profile のディレクトリ>/profile.history/profile-<UTC>.yaml` へ退避し、
+`profile history` が新しい順に一覧する。個人条件を含むため履歴も Git 管理外（`.gitignore`）。
+
+希望条件の更新は Claude Code スキル `/set-conditions`（`.claude/skills/set-conditions/`）が
+インタビュー形式で進行し、組み立てた新 profile を `profile apply` へ渡す。**検証・履歴退避・
+原子的書き込みの中核は CLI 側**にあり、スキルは進行役に徹する（受入条件を `go test` で担保するため）。
 
 ### port（`internal/domain/port`）
 
@@ -390,7 +404,11 @@ type ErrorNotifier interface {
 | 2026-07-15 | 稼働日数は**妥当な全マッチにまたがる大域 min/max を返す**（最初の妥当な組で打ち切らない） | 区切り文字（`;` / `/` / `・`）を列挙として明示的にパースする / 最初の妥当な組を返す従来の `matchWorkDays` を維持する | クラウドテックの `・稼働：4日; 5日 / フルリモート` は稼働日数が `;` で列挙され `bareWorkDaysRe` の別マッチへ割れる。最初の妥当な組で `return` すると先頭の `4日` だけを拾い上限 `5日` を落とす（実 DB の `JA-087086` が `work_days_max=4` になっていた）。区切り文字を解釈せず「妥当な日数トークンを min/max に合流させる」だけにすれば、`;`・`/`・`・` の区別が不要になり、`5日 / フルリモート` は `フルリモート` に日数トークンが無いため `(5,5)` のまま保たれる（`/` を列挙区切りとして扱うかの論点自体が消える）。範囲チェック（1〜7）で `月20日稼働` を弾く既存の守りも各マッチ単位で維持される |
 | 2026-07-15 | 応募返信メールの下書きは **claude.ai の Gmail コネクタ経由で Claude が作り、Go ツールは関与しない**。Go 側は素材（`ApplicationProfile`）を `profile.yaml` に持つだけ | Go に下書き生成を実装する（`gmail.compose` へスコープ拡張＋ LLM 統合） / 型化せず実 `profile.yaml` の自由記述を読む | 「Gmail への書き込みはしない・`gmail.readonly` のみ」（§1・§10）と「生成 AI API を必須にしない」（§1）が両立するのは、**下書き作成をツールの外（Claude コネクタ）へ出す**ときだけ。コネクタは送信機能を持たないため「下書きまで・送信は本人」に構造的に閉じる。Go に実装するとスコープ拡張と LLM 依存の両方が要り、2つの明示的な方針転換になる。素材を型（`ApplicationProfile`）で持つのは、`example.yaml` を唯一の正にして記入例を示せること、Claude が安定してキーで拾えること、`profile validate` で書き崩れ（`strengths` の空要素）を起動時に弾けるため。**この素材はスコアリングに使わない**ので `Profile` 直下に平置きせず別構造体に切り、matching が誤って読む経路を型で塞ぐ |
 | 2026-07-15 | 案件を含まないメールを収集ループで弾く判定は**組み上がった `JobPosting` の述語**（`model.HasContent`）として置き、`email.Extract` の中には置かない。条件は**案件名・企業名・単価がいずれも取れない**の AND | `email.Extract` 内で事務連絡を判定する（email 経路にしか効かない） / `title` 空だけで弾く | 事務連絡メールは `Extract` が `ok=false` を返して fixture 形式 `Parse` へフォールバックし、本文にヘッダ（`Subject:`）が無いため title も空のまま `JobPosting` が組まれ、`hash:` 系 `dedup_key` で空レコードが保存されていた（実 DB に6件）。判定を `Extract` 内に置くと email 経路しか守れないが、述語を収集ループに置けば email の fixture フォールバックも html 経路も**1つのガードで一様に守れ**、Phase 4 の公開 Web コネクタにも効く。`title` 空だけで弾くと「企業名や単価は取れたが title 抽出だけ失敗した良案件」を捨て、「抽出できない項目は null で保存しパイプラインを落とさない」方針と衝突する。単価の「取れた」判定は `RateType` が monthly / hourly のいずれか（ゼロ値・unknown は「取れていない」）。まとめメール（1メール複数案件）は別スコープであり、`■案件名：` を持てば `HasContent()==true` で従来どおり保存される |
+| 2026-07-15 | 希望条件の更新は**検証・履歴退避・原子的書き込みの中核を CLI（`config.ApplyProfile`）に置き**、スキル（`/set-conditions`）は進行役に徹する | 中核をスキルの Markdown 手順として書く / Go の対話 CLI（プロンプトで逐次入力）を作る | 受入条件（退避・不正拒否・原子性・履歴一覧）は `go test` で担保する必要があり、Markdown 手順は検証できない。対話 UI は Claude Code スキル（`AskUserQuestion`）が既に持つため、Go 側で対話ループを再実装するのは二重の手間になる。スキルが組み立てた YAML を `profile apply --from` へ渡す構造にすれば、UI（スキル）とロジック（CLI）が分離し、CLI 単体でも使える |
+| 2026-07-15 | `profile apply` は渡された YAML を**そのまま保存する**（model へ unmarshal → marshal し直さない） | 検証後に `model.Profile` を再マーシャルして書き出す | 再マーシャルすると `profile.example.yaml` の記入例コメント（`remote_required` の解釈など）や項目順が毎回失われる。検証はあくまでゲートとして通し、書き込みは verbatim にすればスキルが現行ファイルを土台にコメントを保てる。未正規化のスキル名（`k8s` 等）が残っても、実行時 `LoadProfile` がメモリ上で `normalizeSkills` するため採点は正しく動く。検証経路は `LoadProfile` と共通（`parseAndValidateProfile`）にし、apply と起動時ロードで検証がずれないようにする |
+| 2026-07-15 | 保存の順序は**検証 → 履歴退避 → 書き込み**（Issue の「履歴退避 → 検証」から入れ替え） | Issue 記載どおり履歴退避を先に行う | 履歴退避を先にすると、検証に落ちる提案（`profile apply` の入力ミス）のたびに履歴が汚れる。退避は現行 `profile.yaml` を読むだけで書き込みには触れないため、検証を先に置いても「検証を通った profile を保存する前に退避する」という受入条件は満たせる。検証失敗時は履歴も profile.yaml も一切変更しない |
 | 2026-07-15 | 定期実行（方式A）は**launchd の plist テンプレート + ラッパースクリプト + Makefile ターゲット**で構成し、Go コードは変更しない。plist に絶対パスをコミットせず、`schedule-enable` が `sed` で置換する | plist へ絶対パスを直接書いてコミットする / cron を使う / `go run` で起動する / ラッパー無しで launchd から直接バイナリを起動する | リポジトリの配置先・ユーザー home はマシン依存であり、絶対パスをコミットすると他環境で壊れる。テンプレート＋置換で解決する。**cron ではなく launchd** を採るのは、スケジュール時刻に Mac がスリープしていても `StartCalendarInterval` が復帰時に取りこぼしを実行するため（ノート PC 前提）。**`go run` ではなく実バイナリ**を使うのは、毎回のコンパイルと Go ツールチェーンへの実行時依存を避けるため。**ラッパーが必須**なのは、`config.LoadEnv` が `os.Getenv` のみで `.env` を自動読み込みせず、launchd から直接起動すると秘密情報が空になり `ErrMissingWebhookURL` / `ErrMissingGoogleCredentials` で起動時停止するため。`.env` のアプリ本体への自動読み込みは別課題としてスコープ外 |
+| 2026-07-16 | apply の検証だけ **strict デコード**（`yaml.Decoder` + `KnownFields(true)`）でキー名のタイポを弾く。起動時ロード（`LoadProfile`）は**非 strict のまま** | apply も起動時ロードも非 strict のまま（PR #39 の当初実装） / 両経路とも strict にする | verbatim 保存により apply が `profile.yaml` への唯一の書き込み経路になったため、`remote_requird` のようなキーのタイポが**非 strict では黙って無視され no-op 保存**される（「項目名を覚えなくてよい誘導編集」という用途と噛み合わない）。一方、起動時ロードまで strict にすると、既存 `profile.yaml` が将来キーや手書きの余剰キーを持っていた瞬間に**起動不能**になる（後方互換を壊す）。そこで検証経路を2本（`parseAndValidateProfile` 非 strict / `parseAndValidateProfileStrict`）に分け、apply だけ strict にする。strict デコードの未知キーエラーは `model.ErrInvalidProfile` でラップし、既存の判別（`errors.Is`）と現行 profile 不変の不変性をそのまま通す。記入例の全キーが構造体に対応していることは `TestApplyProfileAcceptsExampleStrict` が担保する（example.yaml と `model.Profile` のドリフトで実利用者の apply が壊れるのを防ぐ） |
 
 ## 8. スコアリング
 

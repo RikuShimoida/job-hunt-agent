@@ -22,6 +22,9 @@ coverage.txt
 config/profile.yaml
 config/sources.yaml
 
+# 希望条件の履歴（個人条件を含むため profile.yaml と同様に Git 管理外）
+config/profile.history/
+
 # SQLite
 *.db
 *.db-shm
