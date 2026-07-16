@@ -93,8 +93,10 @@ func Evaluate(job model.JobPosting, p model.Profile) Result {
 
 	// 得意スキル
 	jobSkills := append(append([]string{}, job.RequiredSkills...), job.PreferredSkills...)
+	// intersect は第2引数（PreferredSkills）が空なら必ず空を返すため、
+	// matchedSkills が非空なら PreferredSkills も非空。後者の条件は不要。
 	matchedSkills := intersect(jobSkills, p.PreferredSkills)
-	if len(matchedSkills) > 0 && len(p.PreferredSkills) > 0 {
+	if len(matchedSkills) > 0 {
 		pt := len(matchedSkills) * pointsSkillsMax / len(p.PreferredSkills)
 		if pt > pointsSkillsMax {
 			pt = pointsSkillsMax
