@@ -43,7 +43,13 @@ Go 側が持つのは下書きの素材（`ApplicationProfile`）だけで、生
 
 ### 提供形態
 
-CLI（単一バイナリ）。定期実行は GitHub Actions の schedule または常駐サーバーを想定。
+CLI（単一バイナリ）。定期実行は2方式を想定する。
+
+- **方式A（実装済み）**: Mac 上の launchd。`make schedule-enable` / `schedule-disable` /
+  `schedule-status` でオン・オフを切り替える。ラッパースクリプトが `.env` を読み込み、
+  作業ディレクトリをリポジトリへ固定して `bin/job-hunt-agent run` を起動する（§11）。
+- **方式B（未着手）**: GitHub Actions の schedule。将来 A/B を個別にオン・オフできる構想。
+  本 Issue のスコープは A のみ。
 
 ### 実装フェーズ
 
@@ -401,6 +407,7 @@ type ErrorNotifier interface {
 | 2026-07-15 | 希望条件の更新は**検証・履歴退避・原子的書き込みの中核を CLI（`config.ApplyProfile`）に置き**、スキル（`/set-conditions`）は進行役に徹する | 中核をスキルの Markdown 手順として書く / Go の対話 CLI（プロンプトで逐次入力）を作る | 受入条件（退避・不正拒否・原子性・履歴一覧）は `go test` で担保する必要があり、Markdown 手順は検証できない。対話 UI は Claude Code スキル（`AskUserQuestion`）が既に持つため、Go 側で対話ループを再実装するのは二重の手間になる。スキルが組み立てた YAML を `profile apply --from` へ渡す構造にすれば、UI（スキル）とロジック（CLI）が分離し、CLI 単体でも使える |
 | 2026-07-15 | `profile apply` は渡された YAML を**そのまま保存する**（model へ unmarshal → marshal し直さない） | 検証後に `model.Profile` を再マーシャルして書き出す | 再マーシャルすると `profile.example.yaml` の記入例コメント（`remote_required` の解釈など）や項目順が毎回失われる。検証はあくまでゲートとして通し、書き込みは verbatim にすればスキルが現行ファイルを土台にコメントを保てる。未正規化のスキル名（`k8s` 等）が残っても、実行時 `LoadProfile` がメモリ上で `normalizeSkills` するため採点は正しく動く。検証経路は `LoadProfile` と共通（`parseAndValidateProfile`）にし、apply と起動時ロードで検証がずれないようにする |
 | 2026-07-15 | 保存の順序は**検証 → 履歴退避 → 書き込み**（Issue の「履歴退避 → 検証」から入れ替え） | Issue 記載どおり履歴退避を先に行う | 履歴退避を先にすると、検証に落ちる提案（`profile apply` の入力ミス）のたびに履歴が汚れる。退避は現行 `profile.yaml` を読むだけで書き込みには触れないため、検証を先に置いても「検証を通った profile を保存する前に退避する」という受入条件は満たせる。検証失敗時は履歴も profile.yaml も一切変更しない |
+| 2026-07-15 | 定期実行（方式A）は**launchd の plist テンプレート + ラッパースクリプト + Makefile ターゲット**で構成し、Go コードは変更しない。plist に絶対パスをコミットせず、`schedule-enable` が `sed` で置換する | plist へ絶対パスを直接書いてコミットする / cron を使う / `go run` で起動する / ラッパー無しで launchd から直接バイナリを起動する | リポジトリの配置先・ユーザー home はマシン依存であり、絶対パスをコミットすると他環境で壊れる。テンプレート＋置換で解決する。**cron ではなく launchd** を採るのは、スケジュール時刻に Mac がスリープしていても `StartCalendarInterval` が復帰時に取りこぼしを実行するため（ノート PC 前提）。**`go run` ではなく実バイナリ**を使うのは、毎回のコンパイルと Go ツールチェーンへの実行時依存を避けるため。**ラッパーが必須**なのは、`config.LoadEnv` が `os.Getenv` のみで `.env` を自動読み込みせず、launchd から直接起動すると秘密情報が空になり `ErrMissingWebhookURL` / `ErrMissingGoogleCredentials` で起動時停止するため。`.env` のアプリ本体への自動読み込みは別課題としてスコープ外 |
 | 2026-07-16 | apply の検証だけ **strict デコード**（`yaml.Decoder` + `KnownFields(true)`）でキー名のタイポを弾く。起動時ロード（`LoadProfile`）は**非 strict のまま** | apply も起動時ロードも非 strict のまま（PR #39 の当初実装） / 両経路とも strict にする | verbatim 保存により apply が `profile.yaml` への唯一の書き込み経路になったため、`remote_requird` のようなキーのタイポが**非 strict では黙って無視され no-op 保存**される（「項目名を覚えなくてよい誘導編集」という用途と噛み合わない）。一方、起動時ロードまで strict にすると、既存 `profile.yaml` が将来キーや手書きの余剰キーを持っていた瞬間に**起動不能**になる（後方互換を壊す）。そこで検証経路を2本（`parseAndValidateProfile` 非 strict / `parseAndValidateProfileStrict`）に分け、apply だけ strict にする。strict デコードの未知キーエラーは `model.ErrInvalidProfile` でラップし、既存の判別（`errors.Is`）と現行 profile 不変の不変性をそのまま通す。記入例の全キーが構造体に対応していることは `TestApplyProfileAcceptsExampleStrict` が担保する（example.yaml と `model.Profile` のドリフトで実利用者の apply が壊れるのを防ぐ） |
 
 ## 8. スコアリング
@@ -702,3 +709,59 @@ Google フォーム（`docs.google.com/forms/…&entry.547304507=<案件ID>`）�
 `GOOGLE_*` が1つでも欠けた状態で `gmail` ソースが有効なら、`model.ErrMissingGoogleCredentials`
 で**起動時に停止する**。黙って0件成功にすると「収集したつもりで1件も取れていない」事故になる
 （`SLACK_WEBHOOK_URL` 未設定で停止するのと同じ方針）。
+
+---
+
+## 11. 定期自動実行（方式A: launchd）
+
+利用者が指示しなくても案件が Slack へ届くよう、Mac 上で `run` を定期実行する。**Go コードは
+変更せず**、運用資産（plist テンプレート・ラッパー・Makefile ターゲット・ドキュメント）だけを追加する。
+
+### 構成
+
+| ファイル | 役割 |
+|---|---|
+| `deploy/launchd/com.job-hunt-agent.run.plist.template` | launchd の設定テンプレート。`__WRAPPER__` / `__WORKDIR__` / `__LOGDIR__` を `schedule-enable` が絶対パスへ置換する |
+| `deploy/launchd/run-wrapper.sh` | `.env` を読み込み、リポジトリへ `cd` して `bin/job-hunt-agent run` を起動する |
+| `Makefile`（`schedule-enable` / `schedule-disable` / `schedule-status`） | `launchctl bootstrap` / `bootout` / `print` を `gui/<uid>` ドメインでラップする |
+
+### 有効化・無効化・状態確認
+
+| コマンド | 動作 |
+|---|---|
+| `make schedule-enable` | `bin` をビルドし、plist を生成して `~/Library/LaunchAgents/` へ置き、launchd へ登録する（平日 08:00）。先に `bootout` して**再実行を冪等**にする |
+| `make schedule-disable` | launchd から外し、plist を削除する（未登録でも失敗しない） |
+| `make schedule-status` | 登録状態を表示する（未登録なら無効である旨を出す） |
+
+スケジュールは `com.job-hunt-agent.run.plist.template` の `StartCalendarInterval` を編集し、
+再度 `schedule-enable` すれば変わる（既定は平日 Weekday 1–5 の 08:00）。
+
+### 設計判断
+
+- **絶対パスをコミットしない**: リポジトリの配置先・ユーザー home はマシン依存。テンプレート＋
+  `sed` 置換で環境ごとに解決する（§7 の ADR）。
+- **cron ではなく launchd**: スケジュール時刻に Mac がスリープしていても、`StartCalendarInterval`
+  が復帰時に取りこぼしを実行する（ノート PC 前提）。
+- **ラッパーで `.env` を読む**: `config.LoadEnv` は `os.Getenv` のみで `.env` を自動読み込みしない。
+  launchd から直接バイナリを起動すると秘密情報が空になり、`ErrMissingWebhookURL` /
+  `ErrMissingGoogleCredentials` で起動時停止する。ラッパーが `set -a; source .env; set +a` で
+  環境へ展開してから起動する。あわせて `WorkingDirectory` 任せにせずラッパー自身も `cd` する
+  （`DATABASE_URL` の既定が相対パスで、起動ディレクトリがずれると別の場所に空 DB が作られるため）。
+- **実バイナリを使う**: `bin/job-hunt-agent`（`make build` 生成物）を起動し `go run` にしない。
+  毎回のコンパイルと Go ツールチェーンへの実行時依存を避ける。
+
+### ログと秘密情報
+
+実行ログは `~/Library/Logs/job-hunt-agent/`（`schedule-enable` が `mkdir -p` する）へ、
+標準出力を `run.out.log`、標準エラーを `run.err.log` として残す。既存の秘密情報保護方針
+（§9・§10。Webhook URL と Gmail クエリをログにも DB にも出さない）はそのまま維持され、
+本 Issue で新たなログ出力は追加しない。
+
+launchd はこれらのログへ**追記し続け、ローテーションは行わない**（日次実行のため増加は緩やか
+だが、長期運用ではファイルが単調増加する）。ローテーションが必要になった段階で別途検討する。
+
+### 失敗時の扱い
+
+`.env` が無い・`bin/job-hunt-agent` が無い場合、ラッパーは明示メッセージを出して非ゼロ終了する。
+秘密情報が欠ける場合は `run` が既存のセンチネルエラーで起動時停止し、ラッパーがその非ゼロ終了を
+そのまま伝播してログへ残す。Gmail 取得の失敗など実行時の部分失敗は既存方針どおり（§6）。

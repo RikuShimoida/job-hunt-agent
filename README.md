@@ -120,6 +120,29 @@ Remogu（本文に単価もスキルも無い）・フリーランスハブ（1�
 
 `run` / `collect` は Ctrl-C（SIGINT）と SIGTERM で中断できる。
 
+### 定期自動実行（Mac / launchd）
+
+指示しなくても案件が Slack へ届くよう、Mac 上で `run` を定期実行できる（方式A）。
+
+```bash
+make schedule-enable    # 有効化（平日 08:00 に run を自動実行）
+make schedule-status    # 状態確認
+make schedule-disable   # 無効化
+```
+
+`schedule-enable` は `bin/job-hunt-agent` をビルドし、launchd 設定を
+`~/Library/LaunchAgents/com.job-hunt-agent.run.plist` へ生成して登録する。実行ログは
+`~/Library/Logs/job-hunt-agent/`（`run.out.log` / `run.err.log`）に残る。
+
+- **launchd を使う理由**: スケジュール時刻に Mac がスリープしていても、復帰時に取りこぼしを実行する
+- **`.env` の扱い**: ラッパースクリプト（`deploy/launchd/run-wrapper.sh`）が `.env` を読み込んでから
+  `run` を起動する。手動 `run` と同じ秘密情報が渡る。`.env` は `source` で**shell 構文として読む**
+  ため、空白などを含む値はダブルクォートで囲むこと（未クォートだと読み込みに失敗する）
+- **スケジュール変更**: `deploy/launchd/com.job-hunt-agent.run.plist.template` の
+  `StartCalendarInterval` を編集し、再度 `make schedule-enable` する
+
+将来 GitHub Actions での定期実行（方式B）を追加し、A/B を個別に切り替える構想がある。
+
 求職状態は3つ。
 
 | `search_status` | 挙動 |
@@ -223,6 +246,9 @@ job-hunt-agent profile history --show 20260715T141558Z
 | 統合テスト | `go test -tags=integration ./...` | `make test-integration` |
 | ビルド | `go build ./...` | `make build` |
 | dry-run 実行 | — | `make run-dry` |
+| 定期実行の有効化 | — | `make schedule-enable` |
+| 定期実行の無効化 | — | `make schedule-disable` |
+| 定期実行の状態確認 | — | `make schedule-status` |
 
 品質チェックの順序は **format → vet → lint → test**（`make check`）。
 
