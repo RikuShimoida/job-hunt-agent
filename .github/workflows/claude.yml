@@ -8,10 +8,13 @@ on:
 
 # Why not contents: write: Actions 側は Issue をクローズも push もしない（クローズは机の Phase R で行う）。
 # 採点コメントの投稿に issues: write、SKILL.md をチェックアウトして読むために contents: read だけ与える。
+# Why not id-token 省略: action が OIDC トークン交換で認証するため必須。
+# 欠くと "Could not fetch an OIDC token" で起動直後に失敗する（実測）。
 permissions:
   contents: read
   issues: write
   pull-requests: read
+  id-token: write
 
 jobs:
   understand:
